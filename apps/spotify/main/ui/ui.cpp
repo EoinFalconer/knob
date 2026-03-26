@@ -34,6 +34,7 @@ static lv_obj_t  *s_progress_arc = nullptr;
 static lv_obj_t  *s_play_icon    = nullptr;
 static lv_obj_t  *s_logo         = nullptr;
 static lv_obj_t  *s_art_loading  = nullptr; // pulsating placeholder
+static lv_obj_t  *s_qr_code     = nullptr;  // QR code (setup screens)
 
 // ─── State
 static volatile int s_volume     = 50;
@@ -288,6 +289,13 @@ static void tick_cb(lv_timer_t *) {
 
 // ─── Public API
 
+static void cleanup_qr() {
+    if (s_qr_code) {
+        lv_obj_delete(s_qr_code);
+        s_qr_code = nullptr;
+    }
+}
+
 static void show_logo_centered() {
     lv_image_set_src(s_logo, &spotify_logo_64);
     lv_image_set_scale(s_logo, 256); // 1:1 native 64px
@@ -304,6 +312,7 @@ static void show_logo_top() {
 
 void ui_set_status(const char *msg) {
     if (!display_lock(100)) return;
+    cleanup_qr();
     lv_obj_add_flag(s_art_img, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(s_play_icon, LV_OBJ_FLAG_HIDDEN);
     lv_obj_set_style_opa(s_progress_arc, LV_OPA_TRANSP, 0);
@@ -347,6 +356,7 @@ void ui_init() {
 
 void ui_update_state(const SpotifyState *state) {
     if (!display_lock(100)) return;
+    cleanup_qr();
 
     if (state->track[0] == '\0') {
         s_has_track = false;
@@ -479,6 +489,77 @@ void ui_update_state(const SpotifyState *state) {
     if (s_art_pixels) {
         lv_obj_clear_flag(s_art_img, LV_OBJ_FLAG_HIDDEN);
     }
+
+    display_unlock();
+}
+
+void ui_show_wifi_setup(const char *ap_name) {
+    if (!display_lock(1000)) return;
+
+    // Hide all playback UI
+    lv_obj_add_flag(s_art_img, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(s_art_loading, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(s_play_icon, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_set_style_opa(s_progress_arc, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_opa(s_vol_arc, LV_OPA_TRANSP, 0);
+    lv_label_set_text(s_lbl_track, "");
+    lv_label_set_text(s_lbl_artist, "");
+    lv_obj_add_flag(s_logo, LV_OBJ_FLAG_HIDDEN);
+
+    // QR code with WiFi connection string
+    char wifi_qr[128];
+    snprintf(wifi_qr, sizeof(wifi_qr), "WIFI:T:nopass;S:%s;;", ap_name);
+
+    cleanup_qr();
+    s_qr_code = lv_qrcode_create(s_bg);
+    lv_obj_t *qr = s_qr_code;
+    lv_qrcode_set_size(qr, 150);
+    lv_qrcode_set_dark_color(qr, COL_WHITE);
+    lv_qrcode_set_light_color(qr, COL_BG);
+    lv_qrcode_update(qr, wifi_qr, strlen(wifi_qr));
+    lv_obj_align(qr, LV_ALIGN_CENTER, 0, -30);
+
+    // Instructions
+    lv_obj_clear_flag(s_lbl_status, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_align(s_lbl_status, LV_ALIGN_CENTER, 0, 75);
+    char msg[128];
+    snprintf(msg, sizeof(msg), "Scan to join\n\"%s\"\nthen set up WiFi", ap_name);
+    lv_label_set_text(s_lbl_status, msg);
+
+    display_unlock();
+}
+
+void ui_show_spotify_setup(const char *device_ip) {
+    if (!display_lock(1000)) return;
+
+    // Hide all playback UI
+    lv_obj_add_flag(s_art_img, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(s_art_loading, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(s_play_icon, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_set_style_opa(s_progress_arc, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_opa(s_vol_arc, LV_OPA_TRANSP, 0);
+    lv_label_set_text(s_lbl_track, "");
+    lv_label_set_text(s_lbl_artist, "");
+    lv_obj_add_flag(s_logo, LV_OBJ_FLAG_HIDDEN);
+
+    // QR code with the setup URL
+    char url[128];
+    snprintf(url, sizeof(url), "http://%s:8888/spotify", device_ip);
+
+    cleanup_qr();
+    s_qr_code = lv_qrcode_create(s_bg);
+    lv_obj_t *qr = s_qr_code;
+    lv_qrcode_set_size(qr, 150);
+    lv_qrcode_set_dark_color(qr, COL_WHITE);
+    lv_qrcode_set_light_color(qr, COL_BG);
+    lv_qrcode_update(qr, url, strlen(url));
+    lv_obj_align(qr, LV_ALIGN_CENTER, 0, -30);
+
+    // Instructions
+    lv_obj_clear_flag(s_lbl_status, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_align(s_lbl_status, LV_ALIGN_CENTER, 0, 75);
+    lv_label_set_text(s_lbl_status,
+        "Scan to set up\nSpotify on your knob");
 
     display_unlock();
 }

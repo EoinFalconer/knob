@@ -47,6 +47,9 @@ CONFIG_LWIP_SO_RCVBUF=y
 # HTTP client
 CONFIG_ESP_HTTP_CLIENT_ENABLE_HTTPS=y
 
+# HTTP server — increase header size for captive portal (phone browsers send large headers)
+CONFIG_HTTPD_MAX_REQ_HDR_LEN=1024
+
 # WebSocket client (for OpenAI Realtime API)
 CONFIG_ESP_WEBSOCKET_CLIENT_ENABLE=y
 
@@ -69,6 +72,12 @@ CONFIG_ESP_CONSOLE_UART_DEFAULT=y
 # LVGL LZ4 decompression for embedded compressed images
 CONFIG_LV_BIN_DECODER_RAM_LOAD=y
 CONFIG_LV_USE_LZ4=y
+
+# LVGL QR code support (for WiFi setup screen)
+CONFIG_LV_USE_QRCODE=y
+
+# Montserrat 14 as fallback font for accented Latin chars (é, ü, ñ, etc.)
+CONFIG_LV_FONT_MONTSERRAT_14=y
 
 # LVGL memory: use C stdlib malloc so large allocations go to PSRAM
 # (Kconfig choice: must explicitly disable builtin to switch)

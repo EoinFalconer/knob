@@ -1,7 +1,9 @@
 #include "app_config.h"
 #include "spotify/spotify_auth.h"
 #include "spotify/spotify_api.h"
+#include "spotify_setup.h"
 #include "ui/ui.h"
+#include "wifi_setup.h"
 
 #include "hal_pins.h"
 #include "knob_events.h"
@@ -22,16 +24,38 @@
 #include "freertos/task.h"
 #include "freertos/queue.h"
 
+#include "nvs.h"
+
 #include <cstdlib>
 #include <cstring>
 
 static constexpr const char *TAG = "spotify";
+static constexpr int WIFI_MAX_DISCONNECTS = 10;
+static int s_wifi_disconnect_count = 0;
+static bool s_portal_active = false;
 
 ESP_EVENT_DEFINE_BASE(APP_EVENT);
 
-// ─── Kconfig accessors (from sdkconfig)
+// ─── Kconfig accessors (from sdkconfig), with NVS fallback for on-device setup
+
+static char s_nvs_client_id[128] = {};
 
 extern "C" const char *spotify_client_id(void) {
+    // Try NVS first (set by on-device OAuth setup)
+    if (s_nvs_client_id[0] != '\0') return s_nvs_client_id;
+
+    nvs_handle_t h;
+    if (nvs_open("spotify", NVS_READONLY, &h) == ESP_OK) {
+        size_t len = sizeof(s_nvs_client_id);
+        if (nvs_get_str(h, "client_id", s_nvs_client_id, &len) == ESP_OK &&
+            s_nvs_client_id[0] != '\0') {
+            nvs_close(h);
+            return s_nvs_client_id;
+        }
+        nvs_close(h);
+    }
+
+    // Fall back to compiled-in value
 #ifdef CONFIG_SPOTIFY_CLIENT_ID
     return CONFIG_SPOTIFY_CLIENT_ID;
 #else
@@ -114,8 +138,43 @@ static int64_t s_volume_send_at = 0;
 
 // ─── Event handlers
 
+static char s_device_ip[32] = {};
+
+static void get_device_ip(char *buf, size_t buf_size) {
+    esp_netif_t *netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+    if (!netif) {
+        strncpy(buf, "0.0.0.0", buf_size);
+        return;
+    }
+    esp_netif_ip_info_t ip_info = {};
+    if (esp_netif_get_ip_info(netif, &ip_info) == ESP_OK) {
+        snprintf(buf, buf_size, IPSTR, IP2STR(&ip_info.ip));
+    } else {
+        strncpy(buf, "0.0.0.0", buf_size);
+    }
+}
+
 static void on_wifi_connected(void *, esp_event_base_t, int32_t, void *) {
+    if (s_portal_active) return;
     ESP_LOGI(TAG, "WiFi connected");
+    s_wifi_disconnect_count = 0;
+
+    get_device_ip(s_device_ip, sizeof(s_device_ip));
+    ESP_LOGI(TAG, "Device IP: %s", s_device_ip);
+
+    // Check if we have a refresh token (NVS or compiled-in)
+    bool has_token = spotify_setup_has_token() ||
+                     (spotify_refresh_token()[0] != '\0');
+
+    if (!has_token) {
+        // No token — start on-device OAuth setup
+        ESP_LOGW(TAG, "No Spotify refresh token — starting setup flow");
+        ui_show_spotify_setup(s_device_ip);
+        spotify_setup_start(s_device_ip); // blocks until auth completes
+
+        // After setup completes, continue with normal init
+        ESP_LOGI(TAG, "Spotify setup complete — initializing auth");
+    }
 
     ui_set_status("WiFi connected\nFetching token...");
     spotify_auth_init();
@@ -126,15 +185,41 @@ static void on_wifi_connected(void *, esp_event_base_t, int32_t, void *) {
         spotify_api_init();
         spotify_api_start();
     } else {
-        ESP_LOGE(TAG, "Failed to get Spotify token — check credentials");
-        ui_set_status("Token failed\nCheck credentials in\nsdkconfig.defaults.local");
+        // Token failed — fall back to on-device OAuth setup
+        ESP_LOGW(TAG, "Token failed — starting Spotify setup flow");
+        get_device_ip(s_device_ip, sizeof(s_device_ip));
+        ui_show_spotify_setup(s_device_ip);
+        spotify_setup_start(s_device_ip); // blocks until auth completes
+
+        ESP_LOGI(TAG, "Spotify setup complete — retrying auth");
+        spotify_auth_init();
+        token = spotify_auth_get_token();
+        if (token) {
+            ui_set_status("Connected\nWaiting for playback...");
+            spotify_api_init();
+            spotify_api_start();
+        } else {
+            ui_set_status("Auth failed\nRestart and try again");
+        }
     }
 }
 
 static void on_wifi_disconnected(void *, esp_event_base_t, int32_t, void *) {
+    if (s_portal_active) return; // portal owns WiFi now, ignore events
+
     ESP_LOGW(TAG, "WiFi disconnected");
     spotify_api_stop();
-    ui_set_status("WiFi disconnected\nReconnecting...");
+    s_wifi_disconnect_count++;
+
+    if (s_wifi_disconnect_count >= WIFI_MAX_DISCONNECTS) {
+        ESP_LOGW(TAG, "Too many disconnects (%d), starting captive portal",
+                 s_wifi_disconnect_count);
+        s_portal_active = true;
+        ui_show_wifi_setup("knob");
+        wifi_setup_start(); // blocks forever, device restarts after setup
+    } else {
+        ui_set_status("WiFi disconnected\nReconnecting...");
+    }
 }
 
 static void on_spotify_state(void *, esp_event_base_t, int32_t, void *data) {
@@ -237,6 +322,14 @@ extern "C" void app_main() {
     esp_timer_handle_t vol_timer = nullptr;
     esp_timer_create(&timer_args, &vol_timer);
     esp_timer_start_periodic(vol_timer, 100000); // 100ms
+
+    // Check for WiFi credentials — start captive portal if none saved
+    if (!wifi_setup_has_credentials()) {
+        ESP_LOGW(TAG, "No WiFi credentials — starting captive portal");
+        ui_show_wifi_setup("knob");
+        wifi_setup_start(); // blocks forever, device restarts after setup
+        return; // unreachable
+    }
 
     // Start WiFi
     wifi_manager_init();

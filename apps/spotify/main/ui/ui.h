@@ -13,3 +13,9 @@ void ui_update_state(const SpotifyState *state);
 
 /// Show volume overlay for a brief moment.
 void ui_show_volume(int volume);
+
+/// Show WiFi setup screen with QR code to join the AP.
+void ui_show_wifi_setup(const char *ap_name);
+
+/// Show Spotify setup screen with QR code pointing to the setup URL.
+void ui_show_spotify_setup(const char *device_ip);
