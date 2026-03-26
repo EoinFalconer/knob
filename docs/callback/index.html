@@ -12,18 +12,19 @@ min-height:100vh;text-align:center;padding:20px}
 .wrap{max-width:360px}
 h1{font-size:1.3em;margin-bottom:12px}
 p{color:#b3b3b3;font-size:.95em;margin-top:8px}
-.spinner{display:inline-block;width:24px;height:24px;border:3px solid #333;
-border-top-color:#1DB954;border-radius:50%;animation:spin .6s linear infinite;
-margin-bottom:16px}
-@keyframes spin{to{transform:rotate(360deg)}}
+a.btn{display:inline-block;padding:14px 32px;border-radius:24px;
+background:#1DB954;color:#fff;font-size:1em;font-weight:600;
+text-decoration:none;margin-top:20px}
+a.btn:hover{background:#1ed760}
 .error{color:#e74c3c}
+.ok{color:#1DB954}
 </style>
 </head>
 <body>
 <div class="wrap">
-<div class="spinner"></div>
-<h1>Connecting your knob...</h1>
-<p id="status">Redirecting to your device...</p>
+<h1 id="title">Connecting your knob...</h1>
+<p id="status">Tap below to finish setup.</p>
+<a class="btn" id="go-btn" href="#" style="display:none">Finish setup on device</a>
 </div>
 <script>
 (function(){
@@ -33,25 +34,30 @@ margin-bottom:16px}
   var error = p.get('error');
 
   if (error) {
+    document.getElementById('title').textContent = 'Auth failed';
     document.getElementById('status').innerHTML =
       '<span class="error">Spotify error: ' + error + '</span>';
-    document.querySelector('.spinner').style.display = 'none';
     return;
   }
 
   if (!code || !state) {
+    document.getElementById('title').textContent = 'Error';
     document.getElementById('status').innerHTML =
       '<span class="error">Missing auth code or device address.</span>';
-    document.querySelector('.spinner').style.display = 'none';
     return;
   }
 
-  // state = device IP — redirect back to the device with the auth code
   var deviceUrl = 'http://' + state + ':8888/callback?code=' + encodeURIComponent(code);
-  document.getElementById('status').textContent = 'Sending to ' + state + '...';
 
-  // Small delay so the user sees the page
-  setTimeout(function(){ location.href = deviceUrl; }, 500);
+  // Show a button — auto-redirect from HTTPS to HTTP is blocked by some browsers
+  var btn = document.getElementById('go-btn');
+  btn.href = deviceUrl;
+  btn.style.display = 'inline-block';
+  document.getElementById('status').textContent =
+    'Authorized! Tap the button to send the token to your knob.';
+
+  // Also try auto-redirect (works on some browsers)
+  setTimeout(function(){ window.location.href = deviceUrl; }, 800);
 })();
 </script>
 </body>
