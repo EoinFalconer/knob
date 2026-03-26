@@ -56,8 +56,7 @@ a.btn:hover{background:#1ed760}
   document.getElementById('status').textContent =
     'Authorized! Tap the button to send the token to your knob.';
 
-  // Also try auto-redirect (works on some browsers)
-  setTimeout(function(){ window.location.href = deviceUrl; }, 800);
+  // No auto-redirect — HTTPS→HTTP is blocked by most mobile browsers
 })();
 </script>
 </body>
