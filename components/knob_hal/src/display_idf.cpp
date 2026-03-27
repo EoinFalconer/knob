@@ -344,6 +344,9 @@ static void init_touch_hw() {
   touch_cfg.y_max = LCD_V_RES;
   touch_cfg.rst_gpio_num = static_cast<gpio_num_t>(PIN_TOUCH_RST);
   touch_cfg.int_gpio_num = static_cast<gpio_num_t>(PIN_TOUCH_INT);
+  // Mirror touch to match display orientation (panel mirrors both axes)
+  touch_cfg.flags.mirror_x = true;
+  touch_cfg.flags.mirror_y = true;
 
   ESP_ERROR_CHECK(
       esp_lcd_touch_new_i2c_cst816s(touch_io, &touch_cfg, &s_touch));

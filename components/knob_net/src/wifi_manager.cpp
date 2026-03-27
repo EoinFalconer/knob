@@ -59,7 +59,10 @@ static void on_ip_event(void *, esp_event_base_t, int32_t id, void *data) {
 
 void wifi_manager_init() {
   ESP_ERROR_CHECK(esp_netif_init());
-  esp_netif_create_default_wifi_sta();
+  // Only create STA netif if it doesn't already exist (wifi_picker may have)
+  if (!esp_netif_get_handle_from_ifkey("WIFI_STA_DEF")) {
+    esp_netif_create_default_wifi_sta();
+  }
 
   wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
   ESP_ERROR_CHECK(esp_wifi_init(&cfg));

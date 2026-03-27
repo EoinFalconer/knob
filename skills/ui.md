@@ -94,6 +94,26 @@ BROWSE MODE
 
 Voice mode is a separate overlay triggered by double-tap (see `skills/voice.md`).
 
+### Spotify App: Touch + Encoder Interaction
+
+The Spotify app (`apps/spotify/main/ui/ui.cpp`) uses touch as a modifier for encoder input:
+
+```
+NO TOUCH + encoder turn → volume adjust (green arc overlay)
+
+TOUCH DOWN (finger on screen):
+  + slow encoder turn → seek within track (3s per click, green progress arc, "+6s" label)
+  + fast encoder flick (3+ steps) → skip to next/prev track
+  + release without turning → play/pause toggle (SHORT_CLICKED)
+
+TOUCH DOWN visual state:
+  - album art dims to 60% opacity
+  - progress arc thickens and turns green
+  - seek offset label shown centered on art
+```
+
+Touch state is tracked via LVGL `PRESSED`/`RELEASED`/`PRESS_LOST` events on `s_bg`. The `s_encoder_while_touched` counter prevents play/pause from firing after a seek gesture.
+
 ---
 
 ## Images & Logos

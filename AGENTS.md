@@ -45,8 +45,8 @@ components/                    Shared ESP-IDF components
   knob_net/                    WiFi manager, shared event bus
     include/                   wifi_manager.h, knob_events.h
     src/                       wifi_manager.cpp
-  knob_storage/                NVS persistence
-    include/                   settings.h
+  knob_storage/                NVS persistence (multi-network WiFi, up to 5 saved)
+    include/                   settings.h (WifiEntry, settings_wifi_save/get/remove)
     src/                       settings.cpp
   knob_ui/                     LVGL page system, fonts, squircle, art decoder
     include/                   ui_pages.h, fonts.h, squircle.h, art_decoder.h
@@ -70,6 +70,16 @@ apps/
       fonts/                   LVGL font .c files
     sdkconfig.defaults         Build configuration
     stations.json              Station definitions
+  spotify/                     Spotify remote control
+    main/
+      main.cpp                 Entry point, event wiring, command queue
+      app_config.h             Spotify events, SpotifyState struct
+      wifi_picker.cpp/h        On-device WiFi network picker UI
+      wifi_setup.cpp/h         Captive portal for adding new networks
+      spotify_setup.cpp/h      On-device Spotify OAuth (PKCE)
+      spotify/                 API client, auth, JSON parsing
+      ui/                      Now-playing, seek, splash screen
+    sdkconfig.defaults         Build configuration
   template/                    Starter template for new knob apps
 scripts/                       Shared tooling
 docs/                          Hardware specs, architecture, protocol refs

@@ -227,6 +227,15 @@ void spotify_api_prev() {
                 HTTP_METHOD_POST, nullptr, 0);
 }
 
+void spotify_api_seek(int position_ms) {
+    if (position_ms < 0) position_ms = 0;
+    char url[128];
+    snprintf(url, sizeof(url),
+             "https://api.spotify.com/v1/me/player/seek?position_ms=%d",
+             position_ms);
+    api_request(url, HTTP_METHOD_PUT, nullptr, 0);
+}
+
 void spotify_api_play_random_liked() {
     // Step 1: get total liked songs count
     auto *buf = static_cast<char *>(heap_caps_malloc(RESP_BUF_SIZE, MALLOC_CAP_SPIRAM));

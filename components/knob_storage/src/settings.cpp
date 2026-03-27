@@ -5,6 +5,7 @@
 #include "nvs_flash.h"
 
 #include <algorithm>
+#include <cstdio>
 #include <cstring>
 
 static constexpr const char *TAG = "settings";
@@ -22,6 +23,8 @@ static constexpr const char *KEY_WIFI_PASS = "wifi_pass";
 static constexpr const char *KEY_OPENAI_KEY = "openai_key";
 
 static nvs_handle_t s_nvs;
+
+static void wifi_migrate_legacy();
 
 static int32_t read_i32(const char *key, int32_t fallback) {
   int32_t val = fallback;
@@ -56,6 +59,7 @@ void settings_init() {
     return;
   }
   ESP_LOGI(TAG, "NVS initialized");
+  wifi_migrate_legacy();
 }
 
 int settings_get_volume() {
@@ -110,6 +114,122 @@ void settings_get_wifi_pass(char *buf, size_t len) {
 
 void settings_set_wifi_pass(const char *pass) {
   write_str(KEY_WIFI_PASS, pass);
+}
+
+// ─── Multi-network WiFi storage ───────────────────────────────────────────
+
+int settings_wifi_count() {
+  return std::clamp(static_cast<int>(read_i32("wifi_cnt", 0)), 0, WIFI_MAX_SAVED);
+}
+
+static void wifi_write_count(int n) {
+  write_i32("wifi_cnt", std::clamp(n, 0, WIFI_MAX_SAVED));
+}
+
+static void wifi_key(char *buf, const char *prefix, int index) {
+  // e.g. "ws0", "wp0" — short keys for NVS 15-char limit
+  snprintf(buf, 16, "%s%d", prefix, index);
+}
+
+bool settings_wifi_get(int index, WifiEntry *entry) {
+  if (index < 0 || index >= settings_wifi_count()) return false;
+  char key[16];
+  wifi_key(key, "ws", index);
+  read_str(key, entry->ssid, sizeof(entry->ssid), "");
+  wifi_key(key, "wp", index);
+  read_str(key, entry->pass, sizeof(entry->pass), "");
+  return entry->ssid[0] != '\0';
+}
+
+void settings_wifi_save(const char *ssid, const char *pass) {
+  int count = settings_wifi_count();
+
+  // Check if SSID already exists — find its index
+  int existing = -1;
+  for (int i = 0; i < count; i++) {
+    WifiEntry e;
+    if (settings_wifi_get(i, &e) && strcmp(e.ssid, ssid) == 0) {
+      existing = i;
+      break;
+    }
+  }
+
+  // Shift entries down to make room at index 0
+  int start = (existing >= 0) ? existing : std::min(count, WIFI_MAX_SAVED - 1);
+  for (int i = start; i > 0; i--) {
+    WifiEntry e;
+    if (settings_wifi_get(i - 1, &e)) {
+      char key[16];
+      wifi_key(key, "ws", i);
+      write_str(key, e.ssid);
+      wifi_key(key, "wp", i);
+      write_str(key, e.pass);
+    }
+  }
+
+  // Write new entry at index 0
+  char key[16];
+  wifi_key(key, "ws", 0);
+  write_str(key, ssid);
+  wifi_key(key, "wp", 0);
+  write_str(key, pass);
+
+  if (existing < 0 && count < WIFI_MAX_SAVED) {
+    wifi_write_count(count + 1);
+  }
+
+  // Also update the legacy single-network keys for wifi_manager compatibility
+  settings_set_wifi_ssid(ssid);
+  settings_set_wifi_pass(pass);
+}
+
+bool settings_wifi_remove(const char *ssid) {
+  int count = settings_wifi_count();
+  int found = -1;
+  for (int i = 0; i < count; i++) {
+    WifiEntry e;
+    if (settings_wifi_get(i, &e) && strcmp(e.ssid, ssid) == 0) {
+      found = i;
+      break;
+    }
+  }
+  if (found < 0) return false;
+
+  // Shift entries up
+  for (int i = found; i < count - 1; i++) {
+    WifiEntry e;
+    if (settings_wifi_get(i + 1, &e)) {
+      char key[16];
+      wifi_key(key, "ws", i);
+      write_str(key, e.ssid);
+      wifi_key(key, "wp", i);
+      write_str(key, e.pass);
+    }
+  }
+  wifi_write_count(count - 1);
+  return true;
+}
+
+// ─── Migrate legacy single-network credentials into multi-network storage
+// Called once from settings_init(). If legacy keys exist but wifi_cnt == 0,
+// import them as saved network 0.
+static void wifi_migrate_legacy() {
+  int count = settings_wifi_count();
+  if (count > 0) return; // already have multi-network data
+
+  // Check if legacy NVS keys have a real SSID (not just Kconfig default)
+  char ssid[33] = {};
+  size_t len = sizeof(ssid);
+  if (nvs_get_str(s_nvs, KEY_WIFI_SSID, ssid, &len) != ESP_OK || ssid[0] == '\0') {
+    return; // no legacy credentials
+  }
+
+  char pass[65] = {};
+  len = sizeof(pass);
+  nvs_get_str(s_nvs, KEY_WIFI_PASS, pass, &len); // OK if missing
+
+  ESP_LOGI(TAG, "Migrating legacy WiFi credentials: %s", ssid);
+  settings_wifi_save(ssid, pass);
 }
 
 void settings_get_openai_api_key(char *buf, size_t len) {

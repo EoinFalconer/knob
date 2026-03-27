@@ -400,8 +400,7 @@ static esp_err_t handle_connect(httpd_req_t *req) {
     }
 
     ESP_LOGI(TAG, "Saving WiFi: SSID=%s", ssid);
-    settings_set_wifi_ssid(ssid);
-    settings_set_wifi_pass(pass);
+    settings_wifi_save(ssid, pass);
 
     // ─── Verify credentials before responding ───
     // Stop current AP/STA, switch to STA, and try to connect.
@@ -513,9 +512,12 @@ void wifi_setup_start() {
     esp_wifi_stop();
     esp_wifi_deinit();
 
-    // Ensure netif is initialized
+    // Ensure netif is initialized — only create AP netif if it doesn't exist yet
+    // (wifi_picker may have already created it in APSTA mode)
     esp_netif_init();
-    esp_netif_create_default_wifi_ap();
+    if (!esp_netif_get_handle_from_ifkey("WIFI_AP_DEF")) {
+        esp_netif_create_default_wifi_ap();
+    }
 
     wifi_init_config_t wifi_cfg = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&wifi_cfg));

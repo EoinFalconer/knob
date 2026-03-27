@@ -3,6 +3,7 @@
 #include "spotify/spotify_api.h"
 #include "spotify_setup.h"
 #include "ui/ui.h"
+#include "wifi_picker.h"
 #include "wifi_setup.h"
 
 #include "hal_pins.h"
@@ -73,7 +74,7 @@ extern "C" const char *spotify_refresh_token(void) {
 
 // ─── Command queue for API calls (runs on a dedicated task with enough stack)
 
-enum class CmdType : uint8_t { SetVolume, Play, Pause, Next, Prev, DjSpin };
+enum class CmdType : uint8_t { SetVolume, Play, Pause, Next, Prev, DjSpin, Seek };
 
 struct Cmd {
     CmdType type;
@@ -88,15 +89,19 @@ static void cmd_task(void *) {
         if (xQueueReceive(s_cmd_queue, &cmd, portMAX_DELAY) != pdTRUE)
             continue;
 
-        // Drain any queued volume changes — only send the latest
-        if (cmd.type == CmdType::SetVolume) {
+        // Drain queued volume/seek changes — only send the latest of each
+        if (cmd.type == CmdType::SetVolume || cmd.type == CmdType::Seek) {
+            CmdType drain_type = cmd.type;
             Cmd newer;
             while (xQueueReceive(s_cmd_queue, &newer, 0) == pdTRUE) {
-                if (newer.type == CmdType::SetVolume) {
-                    cmd.value = newer.value; // keep latest volume
+                if (newer.type == drain_type) {
+                    cmd.value = newer.value; // keep latest
                 } else {
-                    // Non-volume command — process volume first, then this
-                    spotify_api_set_volume(cmd.value);
+                    // Different command — process current first, then this
+                    if (drain_type == CmdType::SetVolume)
+                        spotify_api_set_volume(cmd.value);
+                    else
+                        spotify_api_seek(cmd.value);
                     cmd = newer;
                     break;
                 }
@@ -123,6 +128,9 @@ static void cmd_task(void *) {
             haptic_buzz();
             spotify_api_play_random_liked();
             break;
+        case CmdType::Seek:
+            spotify_api_seek(cmd.value);
+            break;
         }
     }
 }
@@ -135,6 +143,10 @@ static void enqueue_cmd(CmdType type, int32_t value = 0) {
 // ─── Volume debounce
 static int s_pending_volume = -1;
 static int64_t s_volume_send_at = 0;
+
+// ─── Seek debounce
+static int s_pending_seek = -1;
+static int64_t s_seek_send_at = 0;
 
 // ─── Event handlers
 
@@ -212,11 +224,9 @@ static void on_wifi_disconnected(void *, esp_event_base_t, int32_t, void *) {
     s_wifi_disconnect_count++;
 
     if (s_wifi_disconnect_count >= WIFI_MAX_DISCONNECTS) {
-        ESP_LOGW(TAG, "Too many disconnects (%d), starting captive portal",
+        ESP_LOGW(TAG, "Too many disconnects (%d), restarting to show picker",
                  s_wifi_disconnect_count);
-        s_portal_active = true;
-        ui_show_wifi_setup("knob");
-        wifi_setup_start(); // blocks forever, device restarts after setup
+        esp_restart(); // restart to re-enter the picker flow
     } else {
         ui_set_status("WiFi disconnected\nReconnecting...");
     }
@@ -249,17 +259,27 @@ static void on_prev(void *, esp_event_base_t, int32_t, void *) {
     enqueue_cmd(CmdType::Prev);
 }
 
+static void on_seek(void *, esp_event_base_t, int32_t, void *data) {
+    auto pos = *static_cast<int32_t *>(data);
+    s_pending_seek = pos;
+    s_seek_send_at = esp_timer_get_time() + 300000; // 300ms debounce
+}
+
 static void on_dj_spin(void *, esp_event_base_t, int32_t, void *) {
     ESP_LOGI(TAG, "DJ SPIN!");
     enqueue_cmd(CmdType::DjSpin);
 }
 
-// ─── Volume debounce timer — just enqueues, no HTTP here
-static void volume_timer_cb(void *) {
-    if (s_pending_volume >= 0 &&
-        esp_timer_get_time() >= s_volume_send_at) {
+// ─── Debounce timer (volume + seek) — just enqueues, no HTTP here
+static void debounce_timer_cb(void *) {
+    int64_t now = esp_timer_get_time();
+    if (s_pending_volume >= 0 && now >= s_volume_send_at) {
         enqueue_cmd(CmdType::SetVolume, s_pending_volume);
         s_pending_volume = -1;
+    }
+    if (s_pending_seek >= 0 && now >= s_seek_send_at) {
+        enqueue_cmd(CmdType::Seek, s_pending_seek);
+        s_pending_seek = -1;
     }
 }
 
@@ -309,29 +329,36 @@ extern "C" void app_main() {
                                on_prev, nullptr);
     esp_event_handler_register(APP_EVENT, APP_EVENT_SPOTIFY_DJ_SPIN,
                                on_dj_spin, nullptr);
+    esp_event_handler_register(APP_EVENT, APP_EVENT_SPOTIFY_SEEK,
+                               on_seek, nullptr);
 
     // Hardware + UI
     ui_init();
+    ui_show_splash();
     haptic_init();
     encoder_init();
 
     // Volume debounce timer (100ms periodic) — only enqueues, doesn't do HTTP
     esp_timer_create_args_t timer_args = {};
-    timer_args.callback = volume_timer_cb;
-    timer_args.name = "vol_debounce";
+    timer_args.callback = debounce_timer_cb;
+    timer_args.name = "debounce";
     esp_timer_handle_t vol_timer = nullptr;
     esp_timer_create(&timer_args, &vol_timer);
     esp_timer_start_periodic(vol_timer, 100000); // 100ms
 
-    // Check for WiFi credentials — start captive portal if none saved
-    if (!wifi_setup_has_credentials()) {
-        ESP_LOGW(TAG, "No WiFi credentials — starting captive portal");
+    // ─── WiFi picker: scan, show list, auto-connect or user picks
+    WifiPickerResult wifi_result = wifi_picker_run();
+
+    if (wifi_result == WifiPickerResult::AddNew) {
+        ESP_LOGW(TAG, "User chose 'Add new network' — starting captive portal");
         ui_show_wifi_setup("knob");
         wifi_setup_start(); // blocks forever, device restarts after setup
         return; // unreachable
     }
 
-    // Start WiFi
+    // Picker connected successfully (AutoConnect or user-selected).
+    // Now start wifi_manager for ongoing reconnection handling.
+    ui_set_status("Connecting to WiFi...");
     wifi_manager_init();
 
     ESP_LOGI(TAG, "Init complete");

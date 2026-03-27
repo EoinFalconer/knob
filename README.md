@@ -31,6 +31,7 @@ components/              shared ESP-IDF components (drivers, libraries)
 
 apps/                    one directory per knob
   radio/                 Sonos radio controller (the original app)
+  spotify/               Spotify remote control with seek and album art
   template/              starter template — copy this for new apps
 
 scripts/                 shared tooling (lint, image conversion)
@@ -158,7 +159,7 @@ cp apps/my_knob/sdkconfig.defaults.local.template apps/my_knob/sdkconfig.default
 | ---------------- | --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
 | **knob_hal**     | `hal_pins.h` `display.h` `encoder.h` `haptic.h`     | Hardware pin map, ST77916 QSPI display + CST816S touch init, LVGL mutex, rotary encoder polling, DRV2605 haptic buzz, shared I2C bus |
 | **knob_net**     | `wifi_manager.h` `knob_events.h`                    | WiFi STA with auto-reconnect, `APP_EVENT` bus with `WIFI_CONNECTED`/`DISCONNECTED`/`ENCODER_ROTATE` events                           |
-| **knob_storage** | `settings.h`                                        | NVS get/set for volume, station, speaker, WiFi creds, API keys                                                                       |
+| **knob_storage** | `settings.h`                                        | NVS get/set for volume, station, speaker, WiFi creds (multi-network, up to 5 saved), API keys                                        |
 | **knob_ui**      | `ui_pages.h` `fonts.h` `squircle.h` `art_decoder.h` | Horizontal page system with slide animations, Geist font declarations, iOS-style squircle mask, JPEG-to-RGB565 decoder               |
 | **knob_voice**   | `voice_task.h` `voice_tools.h` `voice_config.h`     | Full OpenAI Realtime API pipeline: WebSocket, PDM mic capture, I2S DAC playback, tool registry with `REGISTER_TOOL()` macro          |
 | **knob_sonos**   | `sonos.h` `discovery.h` `sonos_config.h`            | Sonos UPnP/SOAP: play/pause/volume/next/prev, SSDP speaker discovery, album art fetch, `PlayState`/`SonosState` types                |
@@ -174,6 +175,7 @@ Components define their own event IDs at fixed offsets to avoid collisions:
 | 100–103 | `voice_config.h` | `VOICE_ACTIVATE`, `VOICE_DEACTIVATE`, `VOICE_STATE`, `VOICE_TRANSCRIPT`                       |
 | 200–204 | `sonos_config.h` | `STATION_CHANGED`, `VOLUME_CHANGED`, `PLAY_REQUESTED`, `STOP_REQUESTED`, `SONOS_STATE_UPDATE` |
 | 300–301 | `timer_events.h` | `TIMER_STARTED`, `TIMER_FIRED`                                                                |
+| 400–407 | `app_config.h` (spotify) | `SPOTIFY_STATE_UPDATE`, `VOLUME_SET`, `PLAY`, `PAUSE`, `NEXT`, `PREV`, `DJ_SPIN`, `SEEK` |
 
 Your app can define additional events starting at any unused offset.
 

@@ -11,6 +11,7 @@ enum : int32_t {
     APP_EVENT_SPOTIFY_NEXT         = 404, // no data
     APP_EVENT_SPOTIFY_PREV         = 405, // no data
     APP_EVENT_SPOTIFY_DJ_SPIN      = 406, // no data — random liked song
+    APP_EVENT_SPOTIFY_SEEK         = 407, // data: int32_t (position_ms)
 };
 
 // ─── Playback state from Spotify API

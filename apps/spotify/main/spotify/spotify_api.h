@@ -23,6 +23,9 @@ void spotify_api_next();
 /// Skip to previous track.
 void spotify_api_prev();
 
+/// Seek to position in current track (milliseconds).
+void spotify_api_seek(int position_ms);
+
 /// Play a random liked song (DJ spin feature).
 void spotify_api_play_random_liked();
 

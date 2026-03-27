@@ -1,5 +1,6 @@
 set(SRCS
     "main.cpp"
+    "wifi_picker.cpp"
     "wifi_setup.cpp"
     "spotify_setup.cpp"
     "spotify/json_parse.cpp"
@@ -27,6 +28,7 @@ idf_component_register(
         knob_ui
         esp_event
         esp_timer
+        esp_wifi
         esp_http_client
         esp_http_server
         esp-tls

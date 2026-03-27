@@ -20,11 +20,19 @@ A Spotify remote controller for the ESP32-S3 Knob. Shows what's currently playin
 - Tap center: play/pause toggle (optimistic UI update)
 - API: `PUT /v1/me/player/pause`, `PUT /v1/me/player/play`
 
-### Fast-Spin Skip (Next/Previous Track)
-- A single encoder poll reading of 3+ steps triggers a track skip
+### Seek Control (Hold Screen + Turn)
+- Holding finger on screen enters seek-ready mode (art dims, progress arc turns green)
+- Slow encoder turn while holding = seek within current track (3 seconds per click)
+- A "+6s" / "-3s" offset label shows how far you're seeking
+- Releasing finger commits the seek position to Spotify
+- 300ms debounce before sending API call; seek commands are coalesced like volume
+- API: `PUT /v1/me/player/seek?position_ms={ms}`
+
+### Track Skip (Hold Screen + Flick)
+- While holding screen, a fast encoder flick (3+ steps in one poll) triggers a track skip
 - Direction determines next (clockwise) or previous (counter-clockwise)
 - 2-second cooldown between skips
-- Volume change from early steps is rolled back on skip detection
+- Skip overrides any in-progress seek
 - API: `POST /v1/me/player/next`, `POST /v1/me/player/previous`
 
 ### DJ Spin (Random Liked Song)
@@ -61,16 +69,19 @@ apps/spotify/
   main/
     main.cpp              — boot, event wiring, cmd_task queue
     app_config.h          — event IDs, SpotifyState struct, timing constants
+    wifi_picker.cpp/h     — on-device WiFi network picker (scan, list, select)
+    wifi_setup.cpp/h      — captive portal for adding new WiFi networks
+    spotify_setup.cpp/h   — on-device Spotify OAuth setup (PKCE, QR code)
     spotify/
       json_parse.cpp/h    — shared JSON parser and HTTP response accumulator
       spotify_api.cpp/h   — HTTP client for Spotify Web API + polling task
       spotify_auth.cpp/h  — OAuth token refresh + NVS persistence
     ui/
-      ui.cpp/h            — LVGL screen layout, encoder handling, animations
+      ui.cpp/h            — LVGL screen layout, encoder/touch handling, animations
 ```
 
 ### Command Task Pattern
-All Spotify API calls run on a dedicated `cmd_task` (8KB stack, pinned to core 1) via a FreeRTOS queue. This keeps HTTP+TLS off the event loop and UI task. Volume commands are coalesced — only the latest value is sent.
+All Spotify API calls run on a dedicated `cmd_task` (8KB stack, pinned to core 1) via a FreeRTOS queue. This keeps HTTP+TLS off the event loop and UI task. Volume and seek commands are coalesced — only the latest value of each is sent.
 
 ### Event Flow
 ```
@@ -86,11 +97,17 @@ spotify_api poll_task -> esp_event(STATE_UPDATE) -> ui_update_state
 
 ## UI States
 
-| State           | Display                           | Encoder          | Touch            |
-|-----------------|-----------------------------------|------------------|------------------|
-| Connecting      | Spotify logo + status text        | —                | —                |
-| No playback     | Spotify logo + "Play something"   | —                | —                |
-| Now playing     | Album art + track/artist + progress | Volume adjust  | Tap: play/pause  |
-| Volume overlay  | Green arc (1.5s), hides progress  | Volume adjust    | Tap: play/pause  |
+| State           | Display                                   | Encoder              | Touch                     |
+|-----------------|-------------------------------------------|----------------------|---------------------------|
+| Splash          | Pulsing logo + spinning ring + tagline    | —                    | —                         |
+| WiFi picker     | Scrollable network list                   | Scroll list          | Tap: select network       |
+| WiFi setup      | QR code for captive portal                | —                    | —                         |
+| Spotify setup   | QR code for OAuth                         | —                    | —                         |
+| Connecting      | Spotify logo + status text                | —                    | —                         |
+| No playback     | Spotify logo + "Play something"           | —                    | —                         |
+| Now playing     | Album art + track/artist + progress       | Volume adjust        | Tap: play/pause           |
+| Volume overlay  | Green arc (1.5s), hides progress          | Volume adjust        | Tap: play/pause           |
+| Seek mode       | Dimmed art + green progress + offset label | Seek fwd/back       | Hold: seek, release: commit |
+| Paused          | Dark scrim + "| |" over art              | Volume adjust        | Tap: resume               |
 
 Backlight dims to 8% after 15s of inactivity, restores on any input.

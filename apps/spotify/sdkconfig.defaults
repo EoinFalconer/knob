@@ -95,6 +95,9 @@ CONFIG_LV_IMAGE_HEADER_CACHE_DEF_CNT=24
 # LVGL refresh period — smoother animations (default is 33ms)
 CONFIG_LV_DEF_REFR_PERIOD=10
 
+# Main task stack — WiFi picker runs scan + LVGL on app_main, needs headroom
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
+
 # Pin main task to Core 1 (matches LVGL task affinity)
 CONFIG_ESP_MAIN_TASK_AFFINITY_CPU1=y
 
