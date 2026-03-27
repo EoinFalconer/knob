@@ -42,4 +42,11 @@ menu "Spotify Knob"
         help
             Run scripts/get_token.py to obtain this.
 
+    config SPOTIFY_REDIRECT_URI
+        string "Spotify OAuth redirect URI (GitHub Pages callback)"
+        default "https://rostimelk.github.io/knob/callback/"
+        help
+            The HTTPS callback page hosted on GitHub Pages.
+            For forks, change this to your own GitHub Pages URL.
+
 endmenu

@@ -19,8 +19,7 @@
 #include <cstdio>
 
 static constexpr const char *TAG = "spotify_setup";
-static constexpr const char *REDIRECT_URI =
-    "https://eoinfalconer.github.io/knob/callback/";
+static const char *REDIRECT_URI = CONFIG_SPOTIFY_REDIRECT_URI;
 
 extern "C" const char *spotify_client_id(void);
 
@@ -107,7 +106,7 @@ bool spotify_setup_has_token() {
 }
 
 // ─── HTML: Spotify setup page (GET /spotify)
-// Template has 3 substitutions: %s = client_id, %s = auth_url, %s = device_ip
+// Template has 4 substitutions: %s = redirect_uri, %s = client_id, %s = auth_url, %s = device_ip
 
 static const char SETUP_PAGE_TEMPLATE[] = R"rawhtml(
 <!DOCTYPE html>
@@ -157,7 +156,7 @@ vertical-align:middle;margin-right:6px}
 <div class="step">
  <div class="step-num">One-time setup</div>
  <p>Go to <a href="https://developer.spotify.com/dashboard" target="_blank" style="color:#1DB954">developer.spotify.com/dashboard</a>, open your app, and add this <strong>Redirect URI</strong>:</p>
- <p style="margin-top:6px"><code>https://eoinfalconer.github.io/knob/callback</code></p>
+ <p style="margin-top:6px"><code>%s</code></p>
 </div>
 <div id="cid-section">
 <label for="client_id">Client ID</label>
@@ -283,7 +282,24 @@ static esp_err_t handle_setup(httpd_req_t *req) {
     generate_pkce();
 
     // Build Spotify auth URL with PKCE challenge and device IP as state
-    char auth_url[512];
+    // URL-encode the redirect URI for the query string
+    char encoded_redir[256] = {};
+    {
+        const char *src = REDIRECT_URI;
+        int di = 0;
+        for (int si = 0; src[si] && di < (int)sizeof(encoded_redir) - 4; si++) {
+            char c = src[si];
+            if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+                (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.' || c == '~') {
+                encoded_redir[di++] = c;
+            } else {
+                di += snprintf(encoded_redir + di, 4, "%%%02X", (uint8_t)c);
+            }
+        }
+        encoded_redir[di] = '\0';
+    }
+
+    char auth_url[768];
     snprintf(auth_url, sizeof(auth_url),
         "https://accounts.spotify.com/authorize"
         "?client_id=%s"
@@ -294,15 +310,17 @@ static esp_err_t handle_setup(httpd_req_t *req) {
         "&code_challenge_method=S256"
         "&code_challenge=%s"
         "&state=%s",
-        cid, REDIRECT_URI, s_pkce_challenge, s_device_ip);
+        cid, encoded_redir, s_pkce_challenge, s_device_ip);
 
-    int page_size = sizeof(SETUP_PAGE_TEMPLATE) + 768;
+    ESP_LOGI(TAG, "Auth URL (first 200): %.200s", auth_url);
+
+    int page_size = sizeof(SETUP_PAGE_TEMPLATE) + 1024;
     char *page = static_cast<char *>(malloc(page_size));
     if (!page) {
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "OOM");
         return ESP_FAIL;
     }
-    snprintf(page, page_size, SETUP_PAGE_TEMPLATE, cid, auth_url, s_device_ip);
+    snprintf(page, page_size, SETUP_PAGE_TEMPLATE, REDIRECT_URI, cid, auth_url, s_device_ip);
     httpd_resp_set_type(req, "text/html");
     httpd_resp_send(req, page, HTTPD_RESP_USE_STRLEN);
     free(page);
@@ -331,36 +349,16 @@ static esp_err_t handle_save_client_id(httpd_req_t *req) {
     return ESP_OK;
 }
 
-// ─── HTTP handler: GET /callback?code=XXX — Spotify redirect arrives here
-// The PKCE verifier is already in s_pkce_verifier (generated server-side).
+// ─── Background token exchange task
 
-static esp_err_t handle_callback(httpd_req_t *req) {
-    // Extract code from query string
-    char query[512] = {};
-    if (httpd_req_get_url_query_str(req, query, sizeof(query)) != ESP_OK) {
-        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "No query");
-        return ESP_OK;
-    }
+static char s_auth_code[512] = {};
 
-    char code[256] = {};
-    if (httpd_query_key_value(query, "code", code, sizeof(code)) != ESP_OK) {
-        // Check for error
-        char error[64] = {};
-        httpd_query_key_value(query, "error", error, sizeof(error));
-        char msg[256];
-        snprintf(msg, sizeof(msg),
-            "<html><body style='background:#111;color:#fff;font-family:sans-serif;"
-            "display:flex;justify-content:center;align-items:center;height:100vh'>"
-            "<div style='text-align:center'><h2>Auth failed</h2><p>%s</p></div>"
-            "</body></html>", error[0] ? error : "No auth code received");
-        httpd_resp_set_type(req, "text/html");
-        httpd_resp_send(req, msg, HTTPD_RESP_USE_STRLEN);
-        return ESP_OK;
-    }
+// Forward declaration
+void ui_set_status(const char *msg);
 
-    ESP_LOGI(TAG, "Got auth code from callback, exchanging...");
-
-    // Exchange code for tokens using server-side PKCE verifier
+static void exchange_task(void *) {
+    ESP_LOGI(TAG, "Exchanging auth code for tokens...");
+    ui_set_status("Connecting to Spotify...\nThis can take a moment");
     const char *client_id = spotify_client_id();
 
     char post_body[1536];
@@ -370,7 +368,7 @@ static esp_err_t handle_callback(httpd_req_t *req) {
              "&redirect_uri=%s"
              "&client_id=%s"
              "&code_verifier=%s",
-             code, REDIRECT_URI, client_id, s_pkce_verifier);
+             s_auth_code, REDIRECT_URI, client_id, s_pkce_verifier);
 
     char resp_buf[2048] = {};
     int resp_len = 0;
@@ -378,7 +376,7 @@ static esp_err_t handle_callback(httpd_req_t *req) {
     esp_http_client_config_t cfg = {};
     cfg.url = "https://accounts.spotify.com/api/token";
     cfg.method = HTTP_METHOD_POST;
-    cfg.timeout_ms = 10000;
+    cfg.timeout_ms = 15000;
     cfg.crt_bundle_attach = esp_crt_bundle_attach;
 
     auto *client = esp_http_client_init(&cfg);
@@ -397,45 +395,66 @@ static esp_err_t handle_callback(httpd_req_t *req) {
     esp_http_client_close(client);
     esp_http_client_cleanup(client);
 
-    ESP_LOGI(TAG, "Token exchange: status=%d resp_len=%d", status, resp_len);
+    ESP_LOGI(TAG, "Token exchange: status=%d", status);
 
-    if (err != ESP_OK || status != 200 || resp_len <= 0) {
+    if (status == 200 && resp_len > 0) {
+        char refresh_token[256] = {};
+        json_str(resp_buf, "refresh_token", refresh_token, sizeof(refresh_token));
+        if (refresh_token[0] != '\0') {
+            nvs_handle_t h;
+            if (nvs_open("spotify", NVS_READWRITE, &h) == ESP_OK) {
+                nvs_set_str(h, "refresh_tok", refresh_token);
+                nvs_set_str(h, "client_id", client_id);
+                nvs_commit(h);
+                nvs_close(h);
+            }
+            ESP_LOGI(TAG, "Spotify auth complete — tokens saved");
+            ui_set_status("Connected to Spotify!\nStarting...");
+        }
+    } else {
         ESP_LOGE(TAG, "Token exchange failed: %s", resp_buf);
-        char msg[512];
+        ui_set_status("Token exchange failed\nRestart and try again");
+    }
+
+    if (s_done_sem) xSemaphoreGive(s_done_sem);
+    vTaskDelete(nullptr);
+}
+
+// ─── HTTP handler: GET /callback?code=XXX
+
+static esp_err_t handle_callback(httpd_req_t *req) {
+    ESP_LOGI(TAG, "Callback handler hit");
+
+    char query[1024] = {};
+    if (httpd_req_get_url_query_str(req, query, sizeof(query)) != ESP_OK) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "No query");
+        return ESP_OK;
+    }
+
+    char code[512] = {};
+    if (httpd_query_key_value(query, "code", code, sizeof(code)) != ESP_OK) {
+        // Check for error
+        char error[64] = {};
+        httpd_query_key_value(query, "error", error, sizeof(error));
+        char msg[256];
         snprintf(msg, sizeof(msg),
             "<html><body style='background:#111;color:#fff;font-family:sans-serif;"
             "display:flex;justify-content:center;align-items:center;height:100vh'>"
-            "<div style='text-align:center'><h2>Token exchange failed</h2>"
-            "<p style='color:#e74c3c'>HTTP %d</p></div></body></html>", status);
+            "<div style='text-align:center'><h2>Auth failed</h2><p>%s</p></div>"
+            "</body></html>", error[0] ? error : "No auth code received");
         httpd_resp_set_type(req, "text/html");
         httpd_resp_send(req, msg, HTTPD_RESP_USE_STRLEN);
         return ESP_OK;
     }
 
-    // Parse tokens
-    char refresh_token[256] = {};
-    json_str(resp_buf, "refresh_token", refresh_token, sizeof(refresh_token));
+    ESP_LOGI(TAG, "Got auth code, starting background exchange");
 
-    if (refresh_token[0] == '\0') {
-        ESP_LOGE(TAG, "No refresh token in response");
-        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "No refresh token");
-        return ESP_OK;
-    }
+    // Save code and launch exchange on a separate task (TLS needs big stack)
+    strncpy(s_auth_code, code, sizeof(s_auth_code) - 1);
+    xTaskCreatePinnedToCore(exchange_task, "token_xchg", 16384, nullptr, 5,
+                            nullptr, 1);
 
-    // Save tokens + client_id to NVS
-    nvs_handle_t h;
-    if (nvs_open("spotify", NVS_READWRITE, &h) == ESP_OK) {
-        nvs_set_str(h, "refresh_tok", refresh_token);
-        nvs_set_str(h, "client_id", client_id);
-        nvs_commit(h);
-        nvs_close(h);
-    }
-    ESP_LOGI(TAG, "Spotify auth complete — tokens saved to NVS");
-
-    // Signal completion
-    if (s_done_sem) xSemaphoreGive(s_done_sem);
-
-    // Show success page
+    // Respond immediately — don't block the browser
     httpd_resp_set_type(req, "text/html");
     httpd_resp_sendstr(req,
         "<html><body style='background:#111;color:#fff;font-family:sans-serif;"

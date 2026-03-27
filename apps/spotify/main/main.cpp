@@ -30,7 +30,7 @@
 #include <cstring>
 
 static constexpr const char *TAG = "spotify";
-static constexpr int WIFI_MAX_DISCONNECTS = 10;
+static constexpr int WIFI_MAX_DISCONNECTS = 5;
 static int s_wifi_disconnect_count = 0;
 static bool s_portal_active = false;
 
@@ -176,7 +176,7 @@ static void on_wifi_connected(void *, esp_event_base_t, int32_t, void *) {
         ESP_LOGI(TAG, "Spotify setup complete — initializing auth");
     }
 
-    ui_set_status("WiFi connected\nFetching token...");
+    ui_set_status("Connecting to Spotify...\nThis can take a moment");
     spotify_auth_init();
 
     const char *token = spotify_auth_get_token();

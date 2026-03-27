@@ -296,6 +296,35 @@ static void cleanup_qr() {
     }
 }
 
+// Create a QR code with the Spotify logo overlaid in the center.
+// QR error correction handles ~30% coverage, logo is ~20%.
+static lv_obj_t *create_branded_qr(lv_obj_t *parent, const char *data,
+                                    int qr_size, int y_offset) {
+    cleanup_qr();
+    s_qr_code = lv_qrcode_create(parent);
+    lv_qrcode_set_size(s_qr_code, qr_size);
+    lv_qrcode_set_dark_color(s_qr_code, COL_WHITE);
+    lv_qrcode_set_light_color(s_qr_code, COL_BG);
+    lv_qrcode_update(s_qr_code, data, strlen(data));
+    lv_obj_align(s_qr_code, LV_ALIGN_CENTER, 0, y_offset);
+
+    // Dark circle background behind logo so QR pixels don't show through
+    lv_obj_t *logo_bg = lv_obj_create(s_qr_code);
+    lv_obj_remove_style_all(logo_bg);
+    lv_obj_set_size(logo_bg, 40, 40);
+    lv_obj_set_style_bg_color(logo_bg, COL_BG, 0);
+    lv_obj_set_style_bg_opa(logo_bg, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(logo_bg, LV_RADIUS_CIRCLE, 0);
+    lv_obj_center(logo_bg);
+
+    // Overlay Spotify logo
+    lv_obj_t *logo_overlay = lv_image_create(s_qr_code);
+    lv_image_set_src(logo_overlay, &spotify_logo_32);
+    lv_obj_center(logo_overlay);
+
+    return s_qr_code;
+}
+
 static void show_logo_centered() {
     lv_image_set_src(s_logo, &spotify_logo_64);
     lv_image_set_scale(s_logo, 256); // 1:1 native 64px
@@ -506,24 +535,16 @@ void ui_show_wifi_setup(const char *ap_name) {
     lv_label_set_text(s_lbl_artist, "");
     lv_obj_add_flag(s_logo, LV_OBJ_FLAG_HIDDEN);
 
-    // QR code with WiFi connection string
+    // QR code with Spotify logo overlay
     char wifi_qr[128];
     snprintf(wifi_qr, sizeof(wifi_qr), "WIFI:T:nopass;S:%s;;", ap_name);
-
-    cleanup_qr();
-    s_qr_code = lv_qrcode_create(s_bg);
-    lv_obj_t *qr = s_qr_code;
-    lv_qrcode_set_size(qr, 150);
-    lv_qrcode_set_dark_color(qr, COL_WHITE);
-    lv_qrcode_set_light_color(qr, COL_BG);
-    lv_qrcode_update(qr, wifi_qr, strlen(wifi_qr));
-    lv_obj_align(qr, LV_ALIGN_CENTER, 0, -30);
+    create_branded_qr(s_bg, wifi_qr, 150, -35);
 
     // Instructions
     lv_obj_clear_flag(s_lbl_status, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_align(s_lbl_status, LV_ALIGN_CENTER, 0, 75);
+    lv_obj_align(s_lbl_status, LV_ALIGN_CENTER, 0, 85);
     char msg[128];
-    snprintf(msg, sizeof(msg), "Scan to join\n\"%s\"\nthen set up WiFi", ap_name);
+    snprintf(msg, sizeof(msg), "Scan to join \"%s\"\nthen set up WiFi", ap_name);
     lv_label_set_text(s_lbl_status, msg);
 
     display_unlock();
@@ -542,22 +563,14 @@ void ui_show_spotify_setup(const char *device_ip) {
     lv_label_set_text(s_lbl_artist, "");
     lv_obj_add_flag(s_logo, LV_OBJ_FLAG_HIDDEN);
 
-    // QR code with the setup URL
+    // QR code with Spotify logo overlay
     char url[128];
     snprintf(url, sizeof(url), "http://%s:8888/spotify", device_ip);
-
-    cleanup_qr();
-    s_qr_code = lv_qrcode_create(s_bg);
-    lv_obj_t *qr = s_qr_code;
-    lv_qrcode_set_size(qr, 150);
-    lv_qrcode_set_dark_color(qr, COL_WHITE);
-    lv_qrcode_set_light_color(qr, COL_BG);
-    lv_qrcode_update(qr, url, strlen(url));
-    lv_obj_align(qr, LV_ALIGN_CENTER, 0, -30);
+    create_branded_qr(s_bg, url, 150, -35);
 
     // Instructions
     lv_obj_clear_flag(s_lbl_status, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_align(s_lbl_status, LV_ALIGN_CENTER, 0, 75);
+    lv_obj_align(s_lbl_status, LV_ALIGN_CENTER, 0, 85);
     lv_label_set_text(s_lbl_status,
         "Scan to set up\nSpotify on your knob");
 

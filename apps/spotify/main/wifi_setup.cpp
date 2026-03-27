@@ -12,11 +12,28 @@
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/event_groups.h"
 
 #include <cstring>
 #include <cstdio>
 
 static constexpr const char *TAG = "wifi_setup";
+
+// ─── Event group for WiFi connection verification
+static EventGroupHandle_t s_wifi_event_group = nullptr;
+static const int WIFI_CONNECTED_BIT = BIT0;
+static const int WIFI_FAIL_BIT = BIT1;
+static esp_event_handler_instance_t s_wifi_handler_instance = nullptr;
+static esp_event_handler_instance_t s_ip_handler_instance = nullptr;
+
+static void wifi_verify_event_handler(void *arg, esp_event_base_t event_base,
+                                       int32_t event_id, void *event_data) {
+    if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
+        xEventGroupSetBits(s_wifi_event_group, WIFI_FAIL_BIT);
+    } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
+        xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
+    }
+}
 
 // ─── HTML page served at GET /
 
@@ -386,14 +403,82 @@ static esp_err_t handle_connect(httpd_req_t *req) {
     settings_set_wifi_ssid(ssid);
     settings_set_wifi_pass(pass);
 
+    // ─── Verify credentials before responding ───
+    // Stop current AP/STA, switch to STA, and try to connect.
+    ESP_LOGI(TAG, "Verifying WiFi credentials...");
+
+    s_wifi_event_group = xEventGroupCreate();
+
+    // Register temporary event handlers for verification
+    esp_event_handler_instance_register(WIFI_EVENT, WIFI_EVENT_STA_DISCONNECTED,
+                                        &wifi_verify_event_handler, nullptr,
+                                        &s_wifi_handler_instance);
+    esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_GOT_IP,
+                                        &wifi_verify_event_handler, nullptr,
+                                        &s_ip_handler_instance);
+
+    esp_wifi_stop();
+
+    // Create STA netif if needed (AP netif already exists)
+    static bool sta_netif_created = false;
+    if (!sta_netif_created) {
+        esp_netif_create_default_wifi_sta();
+        sta_netif_created = true;
+    }
+
+    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
+
+    wifi_config_t sta_cfg = {};
+    strncpy((char *)sta_cfg.sta.ssid, ssid, sizeof(sta_cfg.sta.ssid) - 1);
+    strncpy((char *)sta_cfg.sta.password, pass, sizeof(sta_cfg.sta.password) - 1);
+    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &sta_cfg));
+    ESP_ERROR_CHECK(esp_wifi_start());
+    esp_wifi_connect();
+
+    // Wait up to 10 seconds for connection or failure
+    EventBits_t bits = xEventGroupWaitBits(s_wifi_event_group,
+                                            WIFI_CONNECTED_BIT | WIFI_FAIL_BIT,
+                                            pdFALSE, pdFALSE,
+                                            pdMS_TO_TICKS(10000));
+
+    // Unregister verification handlers
+    esp_event_handler_instance_unregister(WIFI_EVENT, WIFI_EVENT_STA_DISCONNECTED,
+                                          s_wifi_handler_instance);
+    esp_event_handler_instance_unregister(IP_EVENT, IP_EVENT_STA_GOT_IP,
+                                          s_ip_handler_instance);
+    vEventGroupDelete(s_wifi_event_group);
+    s_wifi_event_group = nullptr;
+
+    if (bits & WIFI_CONNECTED_BIT) {
+        // Connection succeeded — respond OK and restart
+        ESP_LOGI(TAG, "WiFi credentials verified successfully");
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, "{\"ok\":true}");
+
+        vTaskDelay(pdMS_TO_TICKS(2000));
+        esp_restart();
+        return ESP_OK; // unreachable
+    }
+
+    // Connection failed — switch back to AP mode so user can retry
+    ESP_LOGW(TAG, "WiFi connection failed — reverting to AP mode");
+    esp_wifi_stop();
+
+    wifi_config_t ap_cfg = {};
+    strcpy((char *)ap_cfg.ap.ssid, "knob");
+    ap_cfg.ap.ssid_len = strlen("knob");
+    ap_cfg.ap.channel = 1;
+    ap_cfg.ap.authmode = WIFI_AUTH_OPEN;
+    ap_cfg.ap.max_connection = 4;
+
+    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_APSTA));
+    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &ap_cfg));
+    ESP_ERROR_CHECK(esp_wifi_start());
+
     httpd_resp_set_type(req, "application/json");
-    httpd_resp_sendstr(req, "{\"ok\":true}");
-
-    // Restart after a brief delay so the response is sent
-    vTaskDelay(pdMS_TO_TICKS(2000));
-    esp_restart();
-
-    return ESP_OK; // unreachable
+    httpd_resp_sendstr(req,
+        "{\"ok\":false,\"error\":\"Could not connect to WiFi. Check your password.\"}");
+    return ESP_OK;
 }
 
 // ─── Captive portal redirect for common probe URLs

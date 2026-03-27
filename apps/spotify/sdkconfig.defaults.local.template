@@ -14,3 +14,6 @@ CONFIG_RADIO_WIFI_SSID="your_wifi_ssid"
 CONFIG_RADIO_WIFI_PASSWORD="your_wifi_password"
 CONFIG_SPOTIFY_CLIENT_ID="your_spotify_client_id"
 CONFIG_SPOTIFY_REFRESH_TOKEN="your_refresh_token"
+
+# Override redirect URI for your fork (default: https://rostimelk.github.io/knob/callback/)
+# CONFIG_SPOTIFY_REDIRECT_URI="https://yourusername.github.io/knob/callback/"
