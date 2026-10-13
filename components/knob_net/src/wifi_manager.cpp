@@ -5,6 +5,7 @@
 #include "esp_event.h"
 #include "esp_log.h"
 #include "esp_netif.h"
+#include "esp_system.h"
 #include "esp_timer.h"
 #include "esp_wifi.h"
 
@@ -13,18 +14,25 @@
 
 static constexpr const char *TAG = "wifi";
 static constexpr int BASE_RETRY_MS = 1000;
-static constexpr int MAX_RETRY_MS = 30000;
+// Knobs run on mains power, so a short cap costs nothing and gets us back
+// online quickly when the signal is marginal.
+static constexpr int MAX_RETRY_MS = 10000;
 // Associated but no DHCP lease — kick the association and start over.
 static constexpr int IP_WAIT_MS = 15000;
+// Offline this long despite retries: restart the WiFi driver from scratch,
+// which clears whatever state a reboot would have cleared.
+static constexpr int64_t STALL_RESET_MS = 5 * 60 * 1000;
 
 static int s_retry_count;
 static esp_timer_handle_t s_retry_timer;
 static esp_timer_handle_t s_ip_watchdog;
+static esp_timer_handle_t s_stall_timer;
 
 static char s_ssid[33];
 static char s_pass[65];
 static bool s_scanning;    // a directed scan we started is in flight
 static int s_scan_misses;  // consecutive directed scans that heard nothing
+static bool s_resetting;   // driver stop/start in progress; ignore its events
 
 static void schedule_retry() {
   int delay_ms = std::min(BASE_RETRY_MS * (1 << s_retry_count), MAX_RETRY_MS);
@@ -50,6 +58,9 @@ static void apply_sta_config(const uint8_t *bssid, uint8_t channel) {
     cfg.sta.bssid_set = true;
     cfg.sta.channel = channel;
   }
+  // At the edge of range one missed auth/assoc frame shouldn't cost a whole
+  // scan-and-backoff cycle — let the driver retry the same AP a few times.
+  cfg.sta.failure_retry_cnt = 3;
   esp_wifi_set_config(WIFI_IF_STA, &cfg);
 }
 
@@ -136,8 +147,32 @@ static void ip_watchdog_cb(void *) {
   esp_wifi_disconnect(); // triggers DISCONNECTED → retry
 }
 
+static void arm_stall_timer() {
+  if (!esp_timer_is_active(s_stall_timer))
+    esp_timer_start_once(s_stall_timer, STALL_RESET_MS * 1000LL);
+}
+
+static void stall_reset_cb(void *) {
+  ESP_LOGW(TAG, "Offline for %lld s — restarting WiFi driver (free heap %lu)",
+           STALL_RESET_MS / 1000,
+           static_cast<unsigned long>(esp_get_free_heap_size()));
+  s_resetting = true;
+  s_scanning = false;
+  esp_timer_stop(s_retry_timer);
+  esp_timer_stop(s_ip_watchdog);
+  esp_wifi_stop();
+  s_retry_count = 0;
+  s_scan_misses = 0;
+  apply_sta_config(nullptr, 0);
+  esp_wifi_start(); // STA_START → attempt_connect
+  arm_stall_timer();
+}
+
 static void on_wifi_event(void *, esp_event_base_t, int32_t id, void *data) {
   if (id == WIFI_EVENT_STA_START) {
+    s_resetting = false;
+    // Mains powered: keep the radio awake so weak beacons aren't missed.
+    esp_wifi_set_ps(WIFI_PS_NONE);
     attempt_connect(nullptr);
   } else if (id == WIFI_EVENT_SCAN_DONE) {
     on_scan_done();
@@ -146,9 +181,14 @@ static void on_wifi_event(void *, esp_event_base_t, int32_t id, void *data) {
     esp_timer_start_once(s_ip_watchdog, IP_WAIT_MS * 1000LL);
   } else if (id == WIFI_EVENT_STA_DISCONNECTED) {
     auto *info = static_cast<wifi_event_sta_disconnected_t *>(data);
-    ESP_LOGW(TAG, "Disconnected (reason %d)", info->reason);
+    ESP_LOGW(TAG, "Disconnected (reason %d, rssi %d, free heap %lu)",
+             info->reason, info->rssi,
+             static_cast<unsigned long>(esp_get_free_heap_size()));
+    if (s_resetting)
+      return; // fallout from our own esp_wifi_stop()
     s_scanning = false;
     esp_timer_stop(s_ip_watchdog);
+    arm_stall_timer();
     esp_event_post(APP_EVENT, APP_EVENT_WIFI_DISCONNECTED, nullptr, 0, 0);
 
     if (s_retry_count >= CONFIG_RADIO_WIFI_MAX_RETRIES) {
@@ -164,6 +204,7 @@ static void on_ip_event(void *, esp_event_base_t, int32_t id, void *data) {
     auto *info = static_cast<ip_event_got_ip_t *>(data);
     ESP_LOGI(TAG, "Connected — IP: " IPSTR, IP2STR(&info->ip_info.ip));
     esp_timer_stop(s_ip_watchdog);
+    esp_timer_stop(s_stall_timer);
     s_retry_count = 0;
     esp_event_post(APP_EVENT, APP_EVENT_WIFI_CONNECTED, nullptr, 0, 0);
   } else if (id == IP_EVENT_STA_LOST_IP) {
@@ -204,6 +245,15 @@ void wifi_manager_init() {
   };
   ESP_ERROR_CHECK(esp_timer_create(&wd_args, &s_ip_watchdog));
 
+  const esp_timer_create_args_t stall_args = {
+      .callback = stall_reset_cb,
+      .arg = nullptr,
+      .dispatch_method = ESP_TIMER_TASK,
+      .name = "wifi_stall",
+      .skip_unhandled_events = true,
+  };
+  ESP_ERROR_CHECK(esp_timer_create(&stall_args, &s_stall_timer));
+
   settings_get_wifi_ssid(s_ssid, sizeof(s_ssid));
   settings_get_wifi_pass(s_pass, sizeof(s_pass));
 
@@ -215,6 +265,7 @@ void wifi_manager_init() {
   ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
   apply_sta_config(nullptr, 0);
   ESP_ERROR_CHECK(esp_wifi_start());
+  arm_stall_timer(); // never connecting at all counts as a stall too
 
   ESP_LOGI(TAG, "STA init — SSID: %s", s_ssid);
 }

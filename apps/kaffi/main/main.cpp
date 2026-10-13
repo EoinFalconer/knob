@@ -16,6 +16,7 @@
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_netif_sntp.h"
+#include "esp_system.h"
 #include "esp_timer.h"
 #include "nvs_flash.h"
 
@@ -34,6 +35,10 @@ static constexpr const char *TAG = "kaffi";
 #endif
 
 static constexpr int KAFFI_OTA_CHECK_MS = 60 * 60 * 1000; // hourly
+// No successful Sanity fetch for this long means something is wedged that
+// the WiFi manager couldn't heal (stuck stack, leaked heap, zombie link).
+// A reboot is what fixed it by hand; queued taps survive it in NVS.
+static constexpr uint32_t KAFFI_UNHEALTHY_REBOOT_S = 20 * 60;
 
 ESP_EVENT_DEFINE_BASE(APP_EVENT);
 
@@ -50,6 +55,11 @@ static esp_timer_handle_t s_refresh_timer = nullptr;
 static bool s_net_ready = false;   // one-time network init done
 static bool s_have_people = false; // at least one successful fetch
 static bool s_wifi_up = false;     // associated with an IP right now
+static volatile uint32_t s_last_ok_s = 0; // uptime of last successful fetch
+
+static uint32_t uptime_s() {
+  return static_cast<uint32_t>(esp_timer_get_time() / 1000000);
+}
 
 static void enqueue(Cmd cmd);
 
@@ -120,7 +130,9 @@ static void cmd_task(void *) {
         sanity_api_fetch_people();
       break;
     case Cmd::Type::Refresh:
-      if (!sanity_api_fetch_people() && !s_have_people) {
+      if (sanity_api_fetch_people()) {
+        s_last_ok_s = uptime_s();
+      } else if (!s_have_people) {
         // Nothing on screen yet — keep trying rather than parking on an
         // error. Once people are loaded, the periodic refresh heals things
         // quietly instead.
@@ -262,6 +274,16 @@ static void refresh_timer_cb(void *) {
   esp_event_post(APP_EVENT, APP_EVENT_KAFFI_REFRESH, nullptr, 0, 0);
 }
 
+static void health_timer_cb(void *) {
+  uint32_t stale = uptime_s() - s_last_ok_s;
+  if (stale < KAFFI_UNHEALTHY_REBOOT_S)
+    return;
+  ESP_LOGE(TAG, "No Sanity fetch for %lu s (wifi %s, free heap %lu) — rebooting",
+           static_cast<unsigned long>(stale), s_wifi_up ? "up" : "down",
+           static_cast<unsigned long>(esp_get_free_heap_size()));
+  esp_restart();
+}
+
 static void ota_timer_cb(void *) {
   Cmd cmd;
   cmd.type = Cmd::Type::OtaCheck;
@@ -349,6 +371,13 @@ extern "C" void app_main() {
   esp_timer_create(&ota_args, &ota_timer);
   esp_timer_start_periodic(ota_timer,
                            static_cast<uint64_t>(KAFFI_OTA_CHECK_MS) * 1000);
+
+  esp_timer_create_args_t health_args = {};
+  health_args.callback = health_timer_cb;
+  health_args.name = "kaffi_health";
+  esp_timer_handle_t health_timer = nullptr;
+  esp_timer_create(&health_args, &health_timer);
+  esp_timer_start_periodic(health_timer, 60ULL * 1000 * 1000);
 
   ESP_LOGI(TAG, "Init complete");
 }
