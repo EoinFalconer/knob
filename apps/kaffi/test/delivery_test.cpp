@@ -63,7 +63,13 @@ void esp_fill_random(void *p, size_t n) {
     bytes[i] = static_cast<uint8_t>(random_calls >> ((i % 8) * 8));
 }
 int kaffi_office_get() { return 0; }
+// glibc declares time() noexcept, the macOS SDK doesn't; the override has to
+// match whichever declaration <ctime> brought in.
+#if defined(__APPLE__)
+extern "C" time_t time(time_t *out) {
+#else
 extern "C" time_t time(time_t *out) noexcept {
+#endif
   if (out)
     *out = clock_now;
   return clock_now;
