@@ -11,8 +11,13 @@ bool sanity_api_fetch_people();
 
 /// Create a coffeeEvent referencing a directory person by id (person_name is
 /// denormalized for readability). `kind` is a KaffiKind (cup/brew).
+/// `occurred_at` is an ISO-8601 UTC timestamp; pass null/empty to stamp now —
+/// replayed events pass the time of the original tap.
 bool sanity_api_log(const char *person_id, const char *person_name, int kind,
-                    int quantity);
+                    int quantity, const char *occurred_at);
+
+/// Current UTC time as ISO-8601, or "" while the clock is still unset.
+void sanity_api_iso_now(char *out, size_t out_len);
 
 /// Fetch a JPEG avatar from `url` and decode it to an RGB565 buffer.
 /// On success, *out_pixels is a PSRAM buffer the caller must free.

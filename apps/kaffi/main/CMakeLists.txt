@@ -2,6 +2,7 @@ set(SRCS
     "main.cpp"
     "kaffi/sanity_api.cpp"
     "kaffi/prefs.cpp"
+    "kaffi/pending.cpp"
     "kaffi/ota.cpp"
     "ui/ui.cpp"
     "ui/images/img_flame.cpp"

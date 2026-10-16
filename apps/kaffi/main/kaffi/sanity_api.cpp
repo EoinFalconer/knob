@@ -655,12 +655,17 @@ bool sanity_api_fetch_people() {
 
 // Write a coffeeEvent referencing the directory person by id (+ denormalized
 // name for studio readability).
+void sanity_api_iso_now(char *out, size_t out_len) { iso_now(out, out_len); }
+
 bool sanity_api_log(const char *person_id, const char *person_name, int kind,
-                    int quantity) {
+                    int quantity, const char *occurred_at) {
   const char *kind_str = (kind == KAFFI_BREW) ? "brew" : "cup";
 
   char occ[32];
-  iso_now(occ, sizeof(occ));
+  if (occurred_at && occurred_at[0])
+    snprintf(occ, sizeof(occ), "%s", occurred_at);
+  else
+    iso_now(occ, sizeof(occ));
 
   int office_idx = kaffi_office_get();
   const char *office = KAFFI_OFFICES[office_idx < 0 ? 0 : office_idx].name;

@@ -18,6 +18,11 @@ int ui_pick_office();
 /// Show a status message (connecting, errors, …).
 void ui_set_status(const char *msg);
 
+/// Network pill on the list screen: shown while offline and/or while taps are
+/// queued for delivery; hidden when online with nothing pending.
+/// Safe to call from any task.
+void ui_set_offline(bool offline, int pending);
+
 /// Replace the cached leaderboard and refresh the view.
 /// Safe to call from any task (locks the display internally).
 void ui_update_people(const KaffiState *state);

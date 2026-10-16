@@ -121,6 +121,8 @@ static lv_obj_t *s_pots_view = nullptr;
 static lv_obj_t *s_lb_view = nullptr;
 static lv_obj_t *s_lb_list = nullptr;
 static lv_obj_t *s_toast = nullptr;
+static lv_obj_t *s_net_pill = nullptr; // "OFFLINE" / "N PENDING" on the list
+static lv_obj_t *s_net_lbl = nullptr;
 static lv_timer_t *s_toast_timer = nullptr;
 
 // ─── Helpers
@@ -815,6 +817,25 @@ static void build_list() {
       make_label(s_list_view, &lv_font_montserrat_14, COL_SUB, 128);
   lv_label_set_text(hint, "hold for stats");
   lv_obj_set_style_text_opa(hint, LV_OPA_60, 0);
+
+  // Network pill at the top of the circle. Hidden while online with nothing
+  // queued, so the screen looks exactly as before in the happy case.
+  s_net_pill = lv_obj_create(s_list_view);
+  lv_obj_remove_style_all(s_net_pill);
+  lv_obj_set_size(s_net_pill, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+  lv_obj_set_style_bg_color(s_net_pill, COL_BAD, 0);
+  lv_obj_set_style_bg_opa(s_net_pill, LV_OPA_COVER, 0);
+  lv_obj_set_style_radius(s_net_pill, LV_RADIUS_CIRCLE, 0);
+  lv_obj_set_style_pad_hor(s_net_pill, 10, 0);
+  lv_obj_set_style_pad_ver(s_net_pill, 3, 0);
+  lv_obj_align(s_net_pill, LV_ALIGN_CENTER, 0, -148);
+  lv_obj_clear_flag(s_net_pill, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_clear_flag(s_net_pill, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_add_flag(s_net_pill, LV_OBJ_FLAG_HIDDEN);
+  s_net_lbl = lv_label_create(s_net_pill);
+  lv_obj_set_style_text_font(s_net_lbl, &lv_font_montserrat_14, 0);
+  lv_obj_set_style_text_color(s_net_lbl, COL_BG, 0);
+  lv_obj_center(s_net_lbl);
 }
 
 static void build_action() {
@@ -1048,6 +1069,28 @@ void ui_set_status(const char *msg) {
     return;
   lv_label_set_text(s_status_lbl, msg);
   set_mode(Mode::Status);
+  display_unlock();
+}
+
+void ui_set_offline(bool offline, int pending) {
+  if (!s_net_pill || !display_lock(200))
+    return;
+  if (!offline && pending <= 0) {
+    lv_obj_add_flag(s_net_pill, LV_OBJ_FLAG_HIDDEN);
+  } else {
+    char buf[40];
+    if (offline && pending > 0)
+      snprintf(buf, sizeof(buf), "OFFLINE, %d PENDING", pending);
+    else if (offline)
+      snprintf(buf, sizeof(buf), "OFFLINE");
+    else
+      snprintf(buf, sizeof(buf), "%d PENDING", pending);
+    lv_label_set_text(s_net_lbl, buf);
+    // Red while the network is down; muted once it's back and just draining.
+    lv_obj_set_style_bg_color(s_net_pill, offline ? COL_BAD : COL_SUB, 0);
+    lv_obj_clear_flag(s_net_pill, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_move_foreground(s_net_pill);
+  }
   display_unlock();
 }
 
