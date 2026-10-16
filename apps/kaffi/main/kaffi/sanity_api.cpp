@@ -657,8 +657,11 @@ bool sanity_api_fetch_people() {
 // name for studio readability).
 void sanity_api_iso_now(char *out, size_t out_len) { iso_now(out, out_len); }
 
-bool sanity_api_log(const char *person_id, const char *person_name, int kind,
-                    int quantity, const char *occurred_at) {
+bool sanity_api_log(const char *event_id, const char *person_id,
+                    const char *person_name, int kind, int quantity,
+                    const char *occurred_at) {
+  if (!event_id || !event_id[0])
+    return false;
   const char *kind_str = (kind == KAFFI_BREW) ? "brew" : "cup";
 
   char occ[32];
@@ -673,18 +676,20 @@ bool sanity_api_log(const char *person_id, const char *person_name, int kind,
   char body[800];
   if (occ[0]) {
     snprintf(body, sizeof(body),
-             "{\"mutations\":[{\"create\":{\"_type\":\"coffeeEvent\","
+             "{\"mutations\":[{\"createIfNotExists\":{\"_type\":\"coffeeEvent\","
+             "\"_id\":\"%s\","
              "\"kind\":\"%s\",\"quantity\":%d,\"occurredAt\":\"%s\","
              "\"personId\":\"%s\",\"personName\":\"%s\","
              "\"office\":\"%s\"}}]}",
-             kind_str, quantity, occ, person_id, person_name, office);
+             event_id, kind_str, quantity, occ, person_id, person_name, office);
   } else {
     snprintf(body, sizeof(body),
-             "{\"mutations\":[{\"create\":{\"_type\":\"coffeeEvent\","
+             "{\"mutations\":[{\"createIfNotExists\":{\"_type\":\"coffeeEvent\","
+             "\"_id\":\"%s\","
              "\"kind\":\"%s\",\"quantity\":%d,"
              "\"personId\":\"%s\",\"personName\":\"%s\","
              "\"office\":\"%s\"}}]}",
-             kind_str, quantity, person_id, person_name, office);
+             event_id, kind_str, quantity, person_id, person_name, office);
   }
 
   char url[256];

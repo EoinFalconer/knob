@@ -13,8 +13,11 @@ bool sanity_api_fetch_people();
 /// denormalized for readability). `kind` is a KaffiKind (cup/brew).
 /// `occurred_at` is an ISO-8601 UTC timestamp; pass null/empty to stamp now —
 /// replayed events pass the time of the original tap.
-bool sanity_api_log(const char *person_id, const char *person_name, int kind,
-                    int quantity, const char *occurred_at);
+/// `event_id` must be assigned and persisted before the first attempt; reusing
+/// it makes retries safe even when the server committed but the reply was lost.
+bool sanity_api_log(const char *event_id, const char *person_id,
+                    const char *person_name, int kind, int quantity,
+                    const char *occurred_at);
 
 /// Current UTC time as ISO-8601, or "" while the clock is still unset.
 void sanity_api_iso_now(char *out, size_t out_len);

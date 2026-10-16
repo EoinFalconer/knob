@@ -74,8 +74,8 @@ static void publish_link_state() {
 static int flush_pending() {
   int sent = 0;
   while (const PendingEvent *e = kaffi_pending_front()) {
-    if (!sanity_api_log(e->person_id, e->person_name, e->kind, e->quantity,
-                        e->occurred_at))
+    if (!sanity_api_log(e->event_id, e->person_id, e->person_name, e->kind,
+                        e->quantity, e->occurred_at))
       break;
     kaffi_pending_pop();
     sent++;
@@ -87,23 +87,15 @@ static int flush_pending() {
   return sent;
 }
 
-// A tap that can't be delivered right now is queued, never dropped. The UI
-// has already buzzed and toasted, so from the coffee machine nothing changes;
-// the pill shows the backlog until the network comes back.
+// Persist every tap and its ID before HTTP, including while online. A reset
+// or lost response can then only replay the same event, never create a second.
 static void log_or_queue(const KaffiLogCmd &log) {
-  char occ[32] = {};
-  sanity_api_iso_now(occ, sizeof(occ));
-  bool ok = s_wifi_up && kaffi_pending_count() == 0 &&
-            sanity_api_log(log.person_id, log.person_name, log.kind,
-                           log.quantity, occ);
-  if (ok)
-    return;
   PendingEvent e = {};
   strncpy(e.person_id, log.person_id, sizeof(e.person_id) - 1);
   strncpy(e.person_name, log.person_name, sizeof(e.person_name) - 1);
   e.kind = log.kind;
   e.quantity = log.quantity;
-  strncpy(e.occurred_at, occ, sizeof(e.occurred_at) - 1);
+  sanity_api_iso_now(e.occurred_at, sizeof(e.occurred_at));
   kaffi_pending_push(e);
   ESP_LOGW(TAG, "Queued %s for %s (%d pending)",
            log.kind == KAFFI_BREW ? "brew" : "cup", log.person_name,
