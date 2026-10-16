@@ -11,6 +11,7 @@ struct PendingEvent {
   int32_t kind;     // KaffiKind
   int32_t quantity; // pots (1-2) or cups (1)
   char occurred_at[24]; // ISO-8601 UTC at tap time, or "" if the clock was unset
+  char event_id[40]; // stable Sanity _id, retained across retries and reboots
 };
 
 // Fixed-capacity FIFO of undelivered events, oldest first. Plain data so it
