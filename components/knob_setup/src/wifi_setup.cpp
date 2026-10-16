@@ -128,10 +128,10 @@ vertical-align:middle;margin-right:6px}
 <p class="sub">Give it a connection.</p>
 <div class="card">
 <label for="ssid">WiFi Network</label>
-<select id="ssid"><option value="">Scanning...</option></select>
+<select id="ssid" autocomplete="off"><option value="">Scanning...</option></select>
 <label for="pass">Password</label>
 <div class="pass-wrap">
-<input type="password" id="pass" placeholder="Enter password">
+<input type="password" id="pass" placeholder="Enter password" autocomplete="current-password" autocapitalize="off" autocorrect="off" spellcheck="false">
 <button class="reveal" onclick="togglePass()">show</button>
 </div>
 <button class="connect" id="btn" onclick="doConnect()">Connect</button>
@@ -301,6 +301,41 @@ static esp_err_t handle_root(httpd_req_t *req) {
   return ESP_OK;
 }
 
+// Copy `src` into `dst` as a JSON string body, escaping quotes, backslashes
+// and control characters. Returns false if the result would not fit.
+static bool json_escape(const char *src, char *dst, size_t cap) {
+  size_t pos = 0;
+  for (; *src; src++) {
+    auto c = static_cast<unsigned char>(*src);
+    char buf[8];
+    const char *rep = nullptr;
+    if (c == '"')
+      rep = "\\\"";
+    else if (c == '\\')
+      rep = "\\\\";
+    else if (c < 0x20) {
+      snprintf(buf, sizeof(buf), "\\u%04x", c);
+      rep = buf;
+    }
+    size_t n = rep ? strlen(rep) : 1;
+    if (pos + n >= cap)
+      return false;
+    if (rep)
+      memcpy(dst + pos, rep, n);
+    else
+      dst[pos] = static_cast<char>(c);
+    pos += n;
+  }
+  dst[pos] = '\0';
+  return true;
+}
+
+// How many raw scan records to look at. Records arrive strongest-first, and
+// in an office every access point broadcasts the same handful of names, so
+// the raw list is mostly duplicates — read well past the number of distinct
+// networks we can show.
+static constexpr uint16_t SCAN_MAX_RECORDS = 64;
+
 static esp_err_t handle_scan(httpd_req_t *req) {
   // Trigger a WiFi scan in AP+STA mode
   wifi_scan_config_t scan_cfg = {};
@@ -320,8 +355,8 @@ static esp_err_t handle_scan(httpd_req_t *req) {
 
   uint16_t ap_count = 0;
   esp_wifi_scan_get_ap_num(&ap_count);
-  if (ap_count > 20)
-    ap_count = 20;
+  if (ap_count > SCAN_MAX_RECORDS)
+    ap_count = SCAN_MAX_RECORDS;
 
   auto *ap_list = static_cast<wifi_ap_record_t *>(
       calloc(ap_count, sizeof(wifi_ap_record_t)));
@@ -333,39 +368,46 @@ static esp_err_t handle_scan(httpd_req_t *req) {
 
   esp_wifi_scan_get_ap_records(&ap_count, ap_list);
 
-  // Build JSON array
+  // Build a JSON array of distinct SSIDs, strongest first. Dedupe happens
+  // *before* the output cap: capping the raw list first filled it with
+  // copies of the loudest networks and silently dropped the weaker ones.
   char json[2048];
-  int pos = 0;
+  size_t pos = 0;
   json[pos++] = '[';
+  int emitted = 0;
 
-  // Track seen SSIDs to avoid duplicates
-  for (int i = 0; i < ap_count && pos < (int)sizeof(json) - 128; i++) {
-    if (ap_list[i].ssid[0] == '\0')
+  for (int i = 0; i < ap_count; i++) {
+    const char *ssid = reinterpret_cast<const char *>(ap_list[i].ssid);
+    if (ssid[0] == '\0')
       continue;
 
-    // Skip duplicates
     bool dup = false;
-    for (int j = 0; j < i; j++) {
-      if (strcmp((char *)ap_list[i].ssid, (char *)ap_list[j].ssid) == 0) {
-        dup = true;
-        break;
-      }
-    }
+    for (int j = 0; j < i && !dup; j++)
+      dup = strcmp(ssid, reinterpret_cast<const char *>(ap_list[j].ssid)) == 0;
     if (dup)
       continue;
 
-    if (pos > 1)
-      json[pos++] = ',';
-    pos += snprintf(json + pos, sizeof(json) - pos,
-                    "{\"ssid\":\"%s\",\"rssi\":%d,\"auth\":%d}",
-                    (char *)ap_list[i].ssid, ap_list[i].rssi,
-                    (int)ap_list[i].authmode);
+    char esc[33 * 6 + 1]; // worst case: every byte becomes \u00xx
+    if (!json_escape(ssid, esc, sizeof(esc)))
+      continue;
+
+    char entry[sizeof(esc) + 64];
+    int len = snprintf(entry, sizeof(entry),
+                       "%s{\"ssid\":\"%s\",\"rssi\":%d,\"auth\":%d}",
+                       emitted ? "," : "", esc, ap_list[i].rssi,
+                       static_cast<int>(ap_list[i].authmode));
+    if (len < 0 || pos + static_cast<size_t>(len) + 2 > sizeof(json))
+      break; // +2: closing bracket and terminator
+    memcpy(json + pos, entry, static_cast<size_t>(len));
+    pos += static_cast<size_t>(len);
+    emitted++;
   }
   json[pos++] = ']';
   json[pos] = '\0';
 
   free(ap_list);
 
+  ESP_LOGI(TAG, "Scan: %u records, %d distinct networks", ap_count, emitted);
   httpd_resp_set_type(req, "application/json");
   httpd_resp_sendstr(req, json);
   return ESP_OK;
@@ -556,8 +598,23 @@ void wifi_setup_start(const char *ap_name) {
   xTaskCreate(dns_server_task, "dns_srv", 4096, nullptr, 5, nullptr);
 
   // Start HTTP server
+  // Common captive portal probe URLs — each gets a redirect-to-root handler
+  const char *redirect_uris[] = {
+      "/generate_204",        // Android
+      "/gen_204",             // Android
+      "/hotspot-detect.html", // Apple
+      "/canonical.html",      // Firefox
+      "/connecttest.txt",     // Windows
+      "/redirect",            // Windows
+  };
+  constexpr int FIXED_ROUTES = 3; // "/", "/scan", "/connect"
+
   httpd_config_t http_cfg = HTTPD_DEFAULT_CONFIG();
-  http_cfg.max_uri_handlers = 8;
+  // Sized from the route list — a fixed 8 was one short, so the last probe
+  // URL failed to register ("no slots left") and that client never got
+  // redirected to the portal.
+  http_cfg.max_uri_handlers =
+      FIXED_ROUTES + sizeof(redirect_uris) / sizeof(redirect_uris[0]);
   http_cfg.max_open_sockets = 3;
   http_cfg.max_resp_headers = 16;
   http_cfg.stack_size = 8192;
@@ -596,16 +653,6 @@ void wifi_setup_start(const char *ap_name) {
   };
   httpd_register_uri_handler(server, &uri_connect);
 
-  // Common captive portal probe URLs — redirect to root
-  const char *redirect_uris[] = {
-      "/generate_204",        // Android
-      "/gen_204",             // Android
-      "/hotspot-detect.html", // Apple
-      "/canonical.html",      // Firefox
-      "/connecttest.txt",     // Windows
-      "/redirect",            // Windows
-  };
-
   for (const auto &ruri : redirect_uris) {
     httpd_uri_t rd = {
         .uri = ruri,
@@ -613,7 +660,9 @@ void wifi_setup_start(const char *ap_name) {
         .handler = handle_redirect,
         .user_ctx = nullptr,
     };
-    httpd_register_uri_handler(server, &rd);
+    esp_err_t rerr = httpd_register_uri_handler(server, &rd);
+    if (rerr != ESP_OK)
+      ESP_LOGW(TAG, "Failed to register %s: %s", ruri, esp_err_to_name(rerr));
   }
 
   ESP_LOGI(TAG, "Captive portal ready — connect to %s WiFi", s_ap_name);

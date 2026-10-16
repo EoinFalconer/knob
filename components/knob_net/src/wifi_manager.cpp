@@ -67,12 +67,34 @@ static void on_wifi_event(void *, esp_event_base_t, int32_t id, void *data) {
   }
 }
 
+// Compiled-in (Kconfig) credentials are only a bootstrap: they live in the
+// binary, not in flash, so an OTA to a generic build would send the knob
+// back to the captive portal. Once they have produced a working connection,
+// save them like the portal would. Idempotent — no NVS write on reconnects.
+static void persist_credentials_if_new() {
+  char ssid[33] = {};
+  char pass[65] = {};
+  settings_get_wifi_ssid(ssid, sizeof(ssid));
+  settings_get_wifi_pass(pass, sizeof(pass));
+  if (ssid[0] == '\0')
+    return;
+
+  for (int i = 0; i < settings_wifi_count(); i++) {
+    WifiEntry e;
+    if (settings_wifi_get(i, &e) && strcmp(e.ssid, ssid) == 0)
+      return;
+  }
+  ESP_LOGI(TAG, "Saving credentials for %s to NVS", ssid);
+  settings_wifi_save(ssid, pass);
+}
+
 static void on_ip_event(void *, esp_event_base_t, int32_t id, void *data) {
   if (id == IP_EVENT_STA_GOT_IP) {
     auto *info = static_cast<ip_event_got_ip_t *>(data);
     ESP_LOGI(TAG, "Connected — IP: " IPSTR, IP2STR(&info->ip_info.ip));
     esp_timer_stop(s_ip_watchdog);
     s_retry_count = 0;
+    persist_credentials_if_new();
     esp_event_post(APP_EVENT, APP_EVENT_WIFI_CONNECTED, nullptr, 0, 0);
   } else if (id == IP_EVENT_STA_LOST_IP) {
     ESP_LOGW(TAG, "Lost IP — reconnecting");
