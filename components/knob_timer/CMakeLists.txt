@@ -5,6 +5,8 @@ idf_component_register(
         "include"
     REQUIRES
         esp_event
+        esp_timer
+        nvs_flash
         knob_voice
         knob_net
 )

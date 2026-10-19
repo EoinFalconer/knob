@@ -187,6 +187,7 @@ fi
 # ─── 4. Build ────────────────────────────────────────────────────────────────
 step "🔨 Building $APP..."
 
+scripts/gen_assets.sh
 cd "$APP_DIR"
 
 if [ ! -f "sdkconfig" ]; then

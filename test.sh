@@ -50,6 +50,9 @@ fi
 
 FAIL=0
 
+# Apple's fonts and ringtone stay out of git; they're made here, on a Mac.
+scripts/gen_assets.sh || FAIL=1
+
 build_app() {
   local app_name="$1"
   local app_dir="apps/$app_name"
@@ -80,6 +83,20 @@ build_app() {
   popd > /dev/null
 }
 
+run_host_tests() {
+  local app_name="$1"
+  local runner="apps/$app_name/test/run.sh"
+  [ -x "$runner" ] || return 0
+
+  echo -e "${BOLD}▸ Running host tests ($app_name)...${NC}"
+  if "$runner"; then
+    echo -e "${GREEN}  ✓ Host tests passed${NC}"
+  else
+    echo -e "${RED}  ✗ Host tests failed${NC}"
+    return 1
+  fi
+}
+
 run_lint() {
   local app_name="$1"
   local app_dir="apps/$app_name"
@@ -104,10 +121,12 @@ run_lint() {
 if [ "$BUILD_ALL" = true ]; then
   for app_dir in apps/*/; do
     app_name=$(basename "$app_dir")
+    run_host_tests "$app_name" || FAIL=1
     build_app "$app_name" || FAIL=1
     echo ""
   done
 else
+  run_host_tests "$APP" || FAIL=1
   build_app "$APP" || FAIL=1
 fi
 

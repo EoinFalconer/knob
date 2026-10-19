@@ -2,25 +2,25 @@
 
 #include <cstdint>
 
-static constexpr int FORECAST_MAX = 4;
-
-struct ForecastEntry {
-  int hour; // 0-23
-  float temperature;
-  const char *icon; // Lucide icon UTF-8 string
-  uint32_t color;   // Icon color
-};
+static constexpr int WEATHER_SYMBOL_LEN = 40;
+static constexpr int SUN_TIME_UNKNOWN = -1;
 
 struct WeatherData {
   float temperature;
-  float wind_speed;
-  char condition[32];
-  char symbol[48];
-  const char *icon; // Lucide icon UTF-8 string (e.g. ICON_SUN)
-  uint32_t color;   // Icon color as 0xRRGGBB
+  float wind_speed; // m/s
+  float humidity;   // %
+  float high;       // over the next 24 h
+  float low;
+  char condition[WEATHER_SYMBOL_LEN]; // unknown codes show as themselves
+  char symbol[WEATHER_SYMBOL_LEN];    // met.no symbol code, e.g. "rain_day"
+  // Many codes ("cloudy", "rain") don't say whether the sun is up, so this
+  // comes from the nearest code that does.
+  bool night;
+  // Minutes after local midnight, or SUN_TIME_UNKNOWN (polar day and night,
+  // or the sun lookup failed).
+  int sunrise = SUN_TIME_UNKNOWN;
+  int sunset = SUN_TIME_UNKNOWN;
   bool valid;
-  ForecastEntry forecast[FORECAST_MAX];
-  int forecast_count;
 };
 
 // Weather event ID (post with WeatherData payload)

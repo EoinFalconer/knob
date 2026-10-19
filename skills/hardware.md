@@ -40,6 +40,8 @@ The ST77916 is a 360×360 round QSPI LCD. These constraints have caused boot loo
 - Task stacks and DMA-capable LCD transfer buffers live here
 - `CONFIG_LV_ATTRIBUTE_FAST_MEM_USE_IRAM=y` eats ~38 KB — it was removed, do not re-enable
 - sys_evt stack: **8192 bytes minimum** (default 2048 causes stack overflow with HTTP+TLS+XML handlers)
+- LVGL task stack: **16 KB** (`display_idf.cpp`). The radio peaks around 7 KB (layers for the sheet's rounded corners and masked lists, screen snapshots), right at esp_lvgl_port's default, and an overflow boot-loops the device with a corrupted backtrace in `vTaskSwitchContext`.
+- **`malloc` under 16 KB lands here** (`CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL`), and `lv_malloc` is `malloc`. A handful of 12-15 KB UI buffers starved Wi-Fi of its RX buffers at boot (`wifi:Expected to init 10 rx buffer, actual is 3`, then an abort in `wifi_manager_init`). Put UI bitmaps in PSRAM explicitly with `heap_caps_malloc(..., MALLOC_CAP_SPIRAM)`. `CONFIG_FREERTOS_WATCHPOINT_END_OF_STACK=y` turns that into a readable "Stack canary watchpoint triggered (taskLVGL)" panic.
 
 ### PSRAM
 

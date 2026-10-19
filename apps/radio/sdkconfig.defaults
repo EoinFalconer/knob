@@ -99,3 +99,25 @@ CONFIG_SPIRAM_RODATA=y
 
 # Increase system event queue — Sonos HTTP polling fires many events at boot
 CONFIG_ESP_SYSTEM_EVENT_TASK_QUEUE_SIZE=64
+
+# TLS buffers in PSRAM: the weather fetch couldn't get them from internal RAM,
+# which Wi-Fi and LVGL already crowd.
+CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y
+
+# A task that overruns its stack panics with its name instead of corrupting
+# the scheduler and boot-looping with an unreadable backtrace.
+CONFIG_FREERTOS_WATCHPOINT_END_OF_STACK=y
+
+# Sheets frost a snapshot of the screen behind them.
+CONFIG_LV_USE_SNAPSHOT=y
+
+# Lights go through an IKEA TRADFRI gateway: CoAP over DTLS with a
+# pre-shared key (knob_lights).
+CONFIG_MBEDTLS_SSL_PROTO_DTLS=y
+CONFIG_MBEDTLS_PSK_MODES=y
+CONFIG_MBEDTLS_KEY_EXCHANGE_PSK=y
+# AES in software: the hardware engine bounces PSRAM buffers through small
+# internal DMA allocations, which fail now and then with Wi-Fi and the display
+# holding most of internal RAM, and a DTLS handshake fails with them. Records
+# here are small enough that software AES costs nothing noticeable.
+# CONFIG_MBEDTLS_HARDWARE_AES is not set

@@ -2,6 +2,7 @@
 
 #include "hal_pins.h"
 #include "knob_events.h"
+#include "lights_events.h"
 #include "sonos_config.h"
 #include "timer_events.h"
 #include "weather.h"
@@ -46,6 +47,15 @@ constexpr Station STATIONS[] = {
 };
 
 constexpr int STATION_COUNT = sizeof(STATIONS) / sizeof(STATIONS[0]);
+
+// The Sonos room a timer rings in, by name, whichever room the knob controls.
+// Without a room by this name it rings in the controlled one.
+constexpr const char *TIMER_ROOM = "Kitchen";
+
+// Left untouched this long, the screen settles: browse, the speakers sheet and
+// a timer being set give up and go back to the faces, and a woken screen dims
+// again, unless a timer is running or ringing.
+constexpr uint32_t IDLE_MS = 10000;
 
 // ─── Task Config ────────────────────────────────────────────────────────────
 

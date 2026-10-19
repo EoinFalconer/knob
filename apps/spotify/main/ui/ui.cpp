@@ -180,29 +180,29 @@ static void build_home(lv_obj_t *parent) {
     // Seek offset label (hidden, shown during seek)
     s_seek_lbl = lv_label_create(s_bg);
     lv_label_set_text(s_seek_lbl, "");
-    lv_obj_set_style_text_font(s_seek_lbl, &geist_medium_28, 0);
+    lv_obj_set_style_text_font(s_seek_lbl, &sf_semibold_28, 0);
     lv_obj_set_style_text_color(s_seek_lbl, COL_GREEN, 0);
     lv_obj_set_style_text_align(s_seek_lbl, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_align(s_seek_lbl, LV_ALIGN_CENTER, 0, 55);
     lv_obj_add_flag(s_seek_lbl, LV_OBJ_FLAG_HIDDEN);
 
-    // Track name — Geist 22 for Norwegian char support
+    // Track name — SF 22, with the Norwegian letters
     s_lbl_track = lv_label_create(s_bg);
     lv_label_set_text(s_lbl_track, "");
     lv_obj_set_width(s_lbl_track, 280);
     lv_label_set_long_mode(s_lbl_track, LV_LABEL_LONG_SCROLL_CIRCULAR);
     lv_obj_set_style_text_color(s_lbl_track, COL_WHITE, 0);
-    lv_obj_set_style_text_font(s_lbl_track, &geist_regular_22, 0);
+    lv_obj_set_style_text_font(s_lbl_track, &sf_regular_22, 0);
     lv_obj_set_style_text_align(s_lbl_track, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_align(s_lbl_track, LV_ALIGN_CENTER, 0, 85);
 
-    // Artist name — Geist 16
+    // Artist name — SF 16
     s_lbl_artist = lv_label_create(s_bg);
     lv_label_set_text(s_lbl_artist, "");
     lv_obj_set_width(s_lbl_artist, 260);
     lv_label_set_long_mode(s_lbl_artist, LV_LABEL_LONG_SCROLL_CIRCULAR);
     lv_obj_set_style_text_color(s_lbl_artist, COL_GREY, 0);
-    lv_obj_set_style_text_font(s_lbl_artist, &geist_regular_16, 0);
+    lv_obj_set_style_text_font(s_lbl_artist, &sf_regular_16, 0);
     lv_obj_set_style_text_align(s_lbl_artist, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_align(s_lbl_artist, LV_ALIGN_CENTER, 0, 112);
 
@@ -227,7 +227,7 @@ static void build_home(lv_obj_t *parent) {
     lv_label_set_text(s_lbl_status, "");
     lv_obj_set_width(s_lbl_status, 280);
     lv_obj_set_style_text_color(s_lbl_status, COL_GREY, 0);
-    lv_obj_set_style_text_font(s_lbl_status, &geist_regular_16, 0);
+    lv_obj_set_style_text_font(s_lbl_status, &sf_regular_16, 0);
     lv_obj_set_style_text_align(s_lbl_status, LV_TEXT_ALIGN_CENTER, 0);
     lv_label_set_long_mode(s_lbl_status, LV_LABEL_LONG_WRAP);
     lv_obj_align(s_lbl_status, LV_ALIGN_CENTER, 0, 20);
@@ -579,7 +579,7 @@ void ui_show_splash() {
     lv_label_set_text(tag, "every knob\ndeserves music");
     lv_obj_set_width(tag, 260);
     lv_obj_set_style_text_color(tag, COL_GREY, 0);
-    lv_obj_set_style_text_font(tag, &geist_regular_16, 0);
+    lv_obj_set_style_text_font(tag, &sf_regular_16, 0);
     lv_obj_set_style_text_align(tag, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_align(tag, LV_ALIGN_CENTER, 0, 55);
     lv_obj_set_style_opa(tag, LV_OPA_TRANSP, 0);
@@ -599,7 +599,7 @@ void ui_show_splash() {
     lv_label_set_text(s_splash_status, "");
     lv_obj_set_width(s_splash_status, 260);
     lv_obj_set_style_text_color(s_splash_status, COL_DIM, 0);
-    lv_obj_set_style_text_font(s_splash_status, &geist_regular_16, 0);
+    lv_obj_set_style_text_font(s_splash_status, &sf_regular_16, 0);
     lv_obj_set_style_text_align(s_splash_status, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_align(s_splash_status, LV_ALIGN_CENTER, 0, 95);
     lv_obj_add_flag(s_splash_status, LV_OBJ_FLAG_HIDDEN);
@@ -661,9 +661,9 @@ void ui_init() {
         lv_obj_set_style_bg_opa(s_screen, LV_OPA_COVER, 0);
 
         // Font fallback for accented Latin chars (é, ü, ñ, etc.)
-        const_cast<lv_font_t *>(&geist_regular_22)->fallback = &lv_font_montserrat_14;
-        const_cast<lv_font_t *>(&geist_regular_16)->fallback = &lv_font_montserrat_14;
-        const_cast<lv_font_t *>(&geist_medium_28)->fallback = &lv_font_montserrat_14;
+        const_cast<lv_font_t *>(&sf_regular_22)->fallback = &lv_font_montserrat_14;
+        const_cast<lv_font_t *>(&sf_regular_16)->fallback = &lv_font_montserrat_14;
+        const_cast<lv_font_t *>(&sf_semibold_28)->fallback = &lv_font_montserrat_14;
 
         build_home(s_screen);
 

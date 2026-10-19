@@ -9,9 +9,8 @@ constexpr int DISCOVERY_TIMEOUT_MS = 3000;
 struct SonosSpeaker {
   char ip[40];
   char name[64];
-  char uuid[64];
-  char coordinator_uuid[64]; // UUID of the group coordinator (empty if
-                             // standalone)
+  char uuid[40];             // RINCON_xxx; empty if only found via SSDP
+  char coordinator_uuid[40]; // coordinator of its group (itself if alone)
   uint16_t port;
   bool grouped; // true if this speaker is a non-coordinator member of a group
 };

@@ -2,14 +2,28 @@
 
 #include "lvgl.h"
 
-// Generate a squircle-shaped A8 alpha mask overlay and return an LVGL image
-// that can be placed on top of any image to clip it to a squircle shape.
-// The mask is black outside the squircle (alpha=255) and transparent inside
-// (alpha=0). Call once at init — the mask is allocated in PSRAM and reused.
-//
-// size: width/height of the square mask (e.g. 120)
-// n:    superellipse exponent (4.0 = iOS-style squircle, 2.0 = circle)
-void squircle_mask_init(int size = 120, float n = 4.0f);
+#include <cstdint>
 
-// Get the generated mask image descriptor. Returns nullptr before init.
-const lv_image_dsc_t *squircle_mask_get();
+  // The iOS app icon's shape: a superellipse, whose corners ease into the
+  // sides instead of a circle's arc meeting them. LVGL only rounds with arcs,
+  // so the shape is baked into the picture's alpha, which also draws without
+  // the layer that clip_corner needs.
+
+  // A buffer for one size×size picture, RGB565 then an A8 plane.
+  constexpr uint32_t squircle_bytes(int32_t size) {
+    return static_cast<uint32_t>(size * size * 3);
+  }
+
+  // In PSRAM: internal RAM is kept for Wi-Fi and DMA, and runs out at boot.
+  uint8_t *squircle_alloc(int32_t size);
+  void squircle_free(uint8_t *pixels);
+
+  // Bakes `picture` (or nothing, when null or not size×size) onto `color` in
+  // the shape, into `pixels`, and points `out` at it.
+  void squircle_bake(const lv_image_dsc_t *picture, lv_color_t color,
+                     int32_t size, uint8_t *pixels, lv_image_dsc_t *out);
+
+  
+  
+  
+                     

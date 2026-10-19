@@ -1,5 +1,7 @@
 # Voice Mode — Implementation Plan
 
+> Superseded by [`voice-assistant-plan.md`](voice-assistant-plan.md).
+
 ## Summary
 
 Add an AI voice assistant mode to the radio. Double-tap the touchscreen to enter voice mode: Sonos ducks to 1% volume, the display shows a Siri-style animated orb, the onboard PDM microphone captures speech, and OpenAI's Realtime API (`gpt-realtime-1.5`) provides speech-to-speech responses played through the onboard I2S DAC (3.5mm jack). Voice mode exits automatically after 8 seconds of inactivity — no manual dismissal required. Sonos volume restores on exit.

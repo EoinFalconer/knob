@@ -1,5 +1,7 @@
 # Voice — OpenAI Realtime API & Audio Pipeline
 
+> This describes the current voice mode. A rework that plays answers on the Sonos is planned in [`docs/voice-assistant-plan.md`](../docs/voice-assistant-plan.md).
+
 ## When to read this
 
 You're working on voice mode: the WebSocket connection to OpenAI, PDM mic capture, I2S DAC playback, tool-call handling, or the voice UI overlay.

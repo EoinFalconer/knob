@@ -58,6 +58,7 @@ components/                    Shared ESP-IDF components
     include/                   sonos.h, discovery.h, sonos_config.h
     src/                       sonos.cpp, discovery.cpp
   knob_timer/                  Countdown timer with voice tool integration
+  knob_lights/                 IKEA TRADFRI lights over CoAP/DTLS (all at once)
     include/                   timer.h, timer_events.h
     src/                       timer.cpp
   knob_setup/                  Captive-portal WiFi provisioning (QR + phone)

@@ -14,6 +14,10 @@ components/*/dependencies.lock
 sdkconfig.defaults.local
 apps/*/sdkconfig.defaults.local
 
+# Apple's fonts and ringtone: made on a Mac by scripts/gen_assets.sh
+apps/*/main/fonts/sf_*.c
+apps/radio/main/sounds/alarm.mp3
+
 # IDE / cache
 .vscode/
 .cache/
