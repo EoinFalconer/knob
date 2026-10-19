@@ -6,6 +6,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <utility>
 
 PlayState parse_transport_state(const char *response) {
   char val[32] = {};
@@ -231,11 +232,13 @@ static void parse_didl(const char *position_info, const char *host, int port,
 
   char art[256] = {};
   extract_text(didl, "upnp:albumArtURI", art, sizeof(art));
-  if (art[0] == '/')
-    snprintf(info->art_url, sizeof(info->art_url), "http://%s:%d%s", host, port,
-             art);
-  else
-    snprintf(info->art_url, sizeof(info->art_url), "%s", art);
+  int len = art[0] == '/'
+                ? snprintf(info->art_url, sizeof(info->art_url),
+                           "http://%s:%d%s", host, port, art)
+                : snprintf(info->art_url, sizeof(info->art_url), "%s", art);
+  // A URL cut short would fetch the wrong thing, so it's dropped.
+  if (len < 0 || std::cmp_greater_equal(len, sizeof(info->art_url)))
+    info->art_url[0] = '\0';
 }
 
 void parse_media_info(const char *position_info, const char *host, int port,
