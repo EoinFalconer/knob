@@ -14,14 +14,20 @@ Sonos functionality lives in the **`knob_sonos`** shared component (`components/
 
 ## Key Files
 
-| File                                           | Purpose                                                                            |
-| ---------------------------------------------- | ---------------------------------------------------------------------------------- |
-| `components/knob_sonos/src/sonos.cpp`          | UPnP/SOAP HTTP client (AVTransport + RenderingControl)                             |
-| `components/knob_sonos/include/sonos.h`        | Public API: `sonos_play_uri()`, `sonos_set_volume()`, `sonos_set_stations()`, etc. |
-| `components/knob_sonos/src/discovery.cpp`      | SSDP multicast speaker discovery                                                   |
-| `components/knob_sonos/include/sonos_config.h` | Constants (`SONOS_PORT`, etc.) and event IDs (`APP_EVENT_STATION_CHANGED`, etc.)   |
-| `apps/radio/stations.json`                     | Station URLs and metadata for the radio app                                        |
-| `docs/sonos-upnp.md`                           | Complete SOAP envelope templates for every command                                 |
+| File                                           | Purpose                                                                                    |
+| ---------------------------------------------- | ------------------------------------------------------------------------------------------ |
+| `components/knob_sonos/include/sonos.h`        | Public API. Every call queues work for the net task and returns immediately                |
+| `components/knob_sonos/src/sonos.cpp`          | FreeRTOS glue: the one long-lived net task, command queue, volume coalescing               |
+| `components/knob_sonos/src/sonos_engine.cpp`   | What each command does and when to refresh topology and poll (no FreeRTOS, time passed in) |
+| `components/knob_sonos/src/sonos_control.cpp`  | Room → coordinator routing, select/join/leave, group volume, polling                       |
+| `components/knob_sonos/src/zone_topology.cpp`  | `GetZoneGroupState` fetch + parser, shared by control and discovery                        |
+| `components/knob_sonos/src/track_info.cpp`     | Transport state/actions, track metadata, source names, station matching                    |
+| `components/knob_sonos/src/soap.cpp`           | SOAP call (fails on UPnP faults), XML helpers                                              |
+| `components/knob_sonos/include/sonos_group.h`  | Group label ("Kitchen + 2") and long-press join/leave decision                             |
+| `components/knob_sonos/src/discovery.cpp`      | SSDP multicast speaker discovery                                                           |
+| `components/knob_sonos/include/sonos_config.h` | Constants, `SonosState` / `SonosGroup`, event IDs                                          |
+| `apps/radio/main/ui/now_playing.cpp`           | LVGL-free home-screen decisions (controls per source, subtitle, speaker line)              |
+| `docs/sonos-upnp.md`                           | SOAP envelope templates                                                                    |
 
 ### What moved
 
@@ -51,30 +57,50 @@ sonos_set_stations(my_stations, my_station_count);
 sonos_init();
 ```
 
-`sonos_set_stations()` must be called before `sonos_init()`. The component does not own or embed any station data — the app provides it.
+`sonos_init()` starts the net task idle; `sonos_start()` / `sonos_stop()` follow WiFi up/down. Register stations before the first poll. The component does not own or embed any station data — the app provides it.
 
 ---
 
 ## Interaction Model
 
+The knob controls one **room**. Sonos only honours transport (Play, Pause, Next...) and
+group volume on a group's **coordinator**, and a `SetAVTransportURI` sent to a group
+member pulls it out of the group into its own, unsynced copy of the stream (the
+"echo" bug). So `sonos_control.cpp` resolves the room's coordinator from
+`GetZoneGroupState` and sends every command there. Topology is refreshed on start,
+after every select/join/leave, and every 15 s (5 s retry when unreachable), so
+regroups made in the Sonos app are picked up.
+
+| Action                                             | What happens                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| -------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Station selected                                   | `SetAVTransportURI` + `Play` on the coordinator. Members follow in sync                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| Volume knob                                        | `SnapshotGroupVolume` at the start of each turn, then `SetGroupVolume` on the coordinator. Keeps the rooms' relative balance                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| Tap a room in the picker                           | Control that room, **on its own**: the list is flat, so a tap means that one room and groups are only made by holding. A member leaves its group; a coordinator sends the other rooms away (and keeps playing). Not done when the room's group is playing something the knob isn't moving. If our radio was playing, the old group gets `Stop` and the room plays the station                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| Long-press a room                                  | Not in our group: `SetAVTransportURI x-rincon:<coordinator UUID>` sent **to that room** (join). In our group: `BecomeCoordinatorOfStandaloneGroup` sent to it (leave). Long-press our own room while grouped: it leaves, the rest keep playing                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| Hold to stop                                       | Fades out: `SnapshotGroupVolume`, then `SetGroupVolume` easing out to 0 over `FADE_OUT_MS` (1.5 s, quadratic, every 100 ms; a straight line in Sonos's near-logarithmic units holds loud and then cuts off), then `Stop`, then the volume goes back so the next play starts where it was. Polls during the fade report stopped and no volume. Play calls the stop off; any other command finishes it first                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| Timer rings                                        | `sonos_start_alarm(url, "Kitchen")`: finds the room by name in the topology and works on its group's coordinator (rooms grouped with it hear it too; no such room rings the controlled one). Notes `GetTransportInfo`, `GetGroupVolume`, `GetMediaInfo` (URI and metadata, kept escaped) and `GetPositionInfo` (track, time), then plays Apple's "Breaking" ringtone, which the knob serves itself (`alarm_sound.cpp`, port 8080, looped to 72 s) at group volume 30, whatever it was before. Stop, Snooze, any other command or a minute puts it all back: `SetAVTransportURI` with the old URI and metadata, `Seek` to the queue track and time, the old volume, and `Play` if it was playing. A room with nothing loaded goes back to its own queue so Play can't replay the chime. While it rings on the controlled group, polls aren't published |
+| Poll (every `CONFIG_RADIO_SONOS_POLL_INTERVAL_MS`) | `GetTransportInfo`, `GetGroupVolume`, `GetPositionInfo`, `GetCurrentTransportActions` on the coordinator → `APP_EVENT_SONOS_STATE_UPDATE`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+
+### Other sources (Spotify, AirPlay, TV, line-in, Apple Music...)
+
+`detect_source()` names the source from the track URI: `x-sonos-vli:...,spotify:` and
+`,airplay:` (Spotify Connect / AirPlay), `x-sonos-htastream:` (TV), `x-rincon-stream:`
+(line-in), and the `sid=` music-service ID for queue tracks (204 Apple Music, 201 Amazon,
+174 TIDAL, ...). Which controls the UI shows comes from `GetCurrentTransportActions`,
+not from the source name: a TV or line-in can't pause or skip, so it gets no buttons.
+Tapping the artwork pauses/plays when the source allows it.
+
+### Tests
+
+```bash
+apps/radio/test/run.sh            # UI decisions + knob_sonos
+components/knob_sonos/test/run.sh # knob_sonos only
 ```
-[Station selected]
-  -> sonos_play_uri(station_url)
-       HTTP POST to speaker_ip:1400
-       SOAP Action: SetAVTransportURI + Play
 
-[Volume changed]
-  -> sonos_set_volume(level)
-       HTTP POST to speaker_ip:1400
-       SOAP Action: SetVolume
-
-[Polling] (every 5s while connected)
-  -> sonos_get_transport_info()
-       Parse current URI, play state
-       Post SONOS_STATE event if changed
-```
-
-Commands are HTTP POST requests with SOAP XML bodies to port 1400 on the speaker IP. Response parsing uses string search — no XML parser on the device.
+They run the real control, engine and parsing code against a fake household that
+behaves like Sonos (members refuse transport commands, a member given a stream leaves
+its group, a departing coordinator hands its group off). Assertions are about what
+you'd hear (`audible()`), not just which requests were sent. `./test.sh` and CI run them.
 
 ---
 
@@ -119,7 +145,7 @@ Speaker matching uses the **room name** (stable across reboots) rather than IP (
 
 ### Rescan from Home Screen
 
-Swiping up on the home screen (iOS-style drawer sheet gesture) triggers `APP_EVENT_SPEAKER_RESCAN`, which stops the current connection and re-runs discovery with the picker always shown. This lets users switch speakers without a reboot.
+Swiping up on the home screen (iOS-style drawer sheet gesture) triggers `APP_EVENT_SPEAKER_RESCAN`, which re-runs discovery with the picker shown. Polling keeps running during the scan, so backing out of the picker leaves the knob controlling the current room.
 
 The gesture is detected in `on_screen_released` (`ui.cpp`): vertical travel ≥ 40px upward and greater than horizontal travel. The handler lives in `main.cpp` and spawns `discover_and_connect_task` on the net core.
 
@@ -129,9 +155,10 @@ The picker is a separate LVGL screen (`s_scr_picker`) with:
 
 - **Scanning state**: animated spinner arc + "Scanning for speakers…" text (overlay on main screen)
 - **List state**: "Speakers" title, scrollable card-based list, Rescan button
-- **Cards**: dark rounded rectangles (240×50, radius 16) with room name; green dot marks the currently connected speaker
-- **Navigation**: encoder scrolls through cards (blue highlight), tap to select
-- **Back arrow**: shown when already connected (allows dismissing without changing speaker)
+- **Cards**: dark rounded rectangles (240×50, radius 16) with room name; green dot marks the controlled room, green ring marks other rooms in its group
+- **Navigation**: encoder scrolls through cards (blue highlight), tap to select, long-press to add/remove from the group
+- **Back arrow**: shown when already connected (allows dismissing without changing speaker). Its touch target runs from below the list to the bezel
+- **Closes by itself** after 10 s (`IDLE_MS` in `app_config.h`) with no touch or turn, once a room is chosen
 
 ---
 
@@ -147,7 +174,8 @@ The picker is a separate LVGL screen (`s_scr_picker`) with:
 | -------------------------- | --------------- | --------------------------------------------- |
 | `discovery_scan()`         | `discovery.cpp` | SSDP + ZoneGroupState coordinator resolution  |
 | `discovery_find_by_name()` | `discovery.cpp` | Match saved speaker name in discovery results |
-| `select_speaker()`         | `ui.cpp`        | Set speaker, persist, dismiss picker          |
+| `select_speaker()`         | `ui.cpp`        | Switch room (moves our radio along), persist  |
+| `toggle_speaker_group()`   | `ui.cpp`        | Long-press join/leave                         |
 | `rebuild_speaker_list()`   | `ui.cpp`        | Build the card-based picker screen            |
 
 ---
@@ -179,7 +207,11 @@ See `docs/sonos-upnp.md` for the complete set of SOAP envelopes (SetAVTransportU
 
 **Sonos stops playing after a few minutes**: Check if the stream URL returns a redirect. Sonos doesn't follow HTTP redirects from `x-rincon-mp3radio://` URIs. Use the final URL.
 
-**Volume commands ignored**: You may be sending to the wrong speaker in a stereo pair. Verify you're targeting the coordinator IP (the one without `Invisible='1'`).
+**Transport or volume commands ignored (UPnP error 800)**: The target isn't the group coordinator. Everything should go through `control_*`, which routes to the coordinator.
+
+**Same station playing slightly out of sync in two rooms**: Something sent `SetAVTransportURI` with a stream to a group member instead of the coordinator. Rooms in a group must only ever get `x-rincon:<coordinator UUID>`.
+
+**Home theater room missing from the picker**: Satellites (Sub, surrounds) are nested `<Satellite Invisible="1">` children. Attribute lookups must stay inside the member's own tag.
 
 **Event queue overflow** (`ESP_ERR_TIMEOUT` from `esp_event_post`): Increase `CONFIG_ESP_SYSTEM_EVENT_TASK_QUEUE_SIZE` in the app's sdkconfig (`apps/radio/sdkconfig`). The Sonos polling loop + WiFi events + UI events can exceed 32 slots.
 

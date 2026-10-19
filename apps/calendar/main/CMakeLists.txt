@@ -4,11 +4,11 @@ set(SRCS
     "ical_parser.cpp"
     "weather.cpp"
     "ui/ui.cpp"
-    "fonts/geist_regular_16.c"
-    "fonts/geist_regular_18.c"
-    "fonts/geist_regular_20.c"
-    "fonts/geist_medium_28.c"
-    "fonts/geist_medium_52.c"
+    "fonts/sf_regular_16.c"
+    "fonts/sf_regular_18.c"
+    "fonts/sf_regular_20.c"
+    "fonts/sf_semibold_28.c"
+    "fonts/sf_rounded_semibold_52.c"
     "fonts/lucide_weather_20.c"
 )
 

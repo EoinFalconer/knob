@@ -45,7 +45,7 @@ cd apps/radio && idf.py build
 scripts/lint.sh
 ```
 
-CI runs `idf.py build` on every PR (`.github/workflows/build.yml`).
+CI runs on every PR (`.github/workflows/build.yml`): the radio's host tests, and `idf.py build` for kaffi. The radio isn't built in CI because its SF fonts and timer ringtone are Apple's, kept out of git and made on a Mac by `scripts/gen_assets.sh`, which `test.sh` and `flash.sh` run before building (needs `uv`, `npx`, `ffmpeg`, `lame`).
 
 ---
 

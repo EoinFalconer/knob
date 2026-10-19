@@ -1,6 +1,5 @@
 #include "weather.h"
 #include "app_config.h"
-#include "fonts.h"
 
 #include "cJSON.h"
 #include "esp_crt_bundle.h"
@@ -12,7 +11,11 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
+#include <algorithm>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <initializer_list>
 
 static constexpr const char *TAG = "weather";
@@ -26,137 +29,76 @@ static WeatherData s_data = {};
 static TaskHandle_t s_task = nullptr;
 static bool s_started = false;
 
-// ─── Symbol Code Mapping ────────────────────────────────────────────────────
+// ─── Symbol Codes ───────────────────────────────────────────────────────────
 
-enum class TimeVariant { Day, Night, None };
+enum class TimeOfDay { Day, Night, Unknown };
 
-struct SymbolEntry {
+struct SymbolText {
   const char *code;
   const char *text;
-  const char *icon_day;
-  const char *icon_night;
-  uint32_t color_day;
-  uint32_t color_night;
 };
 
-// Colors
-static constexpr uint32_t COL_SUN = 0xFFD60A;
-static constexpr uint32_t COL_MOON = 0xB0B0C0;
-static constexpr uint32_t COL_CLOUD = 0x8E8E93;
-static constexpr uint32_t COL_RAIN = 0x64D2FF;
-static constexpr uint32_t COL_SNOW = 0xE0E0E8;
-static constexpr uint32_t COL_THUNDER = 0xFFD60A;
-static constexpr uint32_t COL_FOG = 0x8E8E93;
-static constexpr uint32_t COL_SLEET = 0x86C8E8;
-
-static constexpr SymbolEntry SYMBOLS[] = {
-    {"clearsky", "Clear", ICON_SUN, ICON_MOON, COL_SUN, COL_MOON},
-    {"fair", "Fair", ICON_CLOUD_SUN, ICON_CLOUD_MOON, COL_SUN, COL_MOON},
-    {"partlycloudy", "Partly cloudy", ICON_CLOUD_SUN, ICON_CLOUD_MOON, COL_SUN,
-     COL_MOON},
-    {"cloudy", "Cloudy", ICON_CLOUD, ICON_CLOUD, COL_CLOUD, COL_CLOUD},
-    {"fog", "Fog", ICON_CLOUD_FOG, ICON_CLOUD_FOG, COL_FOG, COL_FOG},
-    {"lightrain", "Light rain", ICON_CLOUD_DRIZZLE, ICON_CLOUD_DRIZZLE,
-     COL_RAIN, COL_RAIN},
-    {"rain", "Rain", ICON_CLOUD_RAIN, ICON_CLOUD_RAIN, COL_RAIN, COL_RAIN},
-    {"heavyrain", "Heavy rain", ICON_CLOUD_RAIN_WIND, ICON_CLOUD_RAIN_WIND,
-     COL_RAIN, COL_RAIN},
-    {"lightrainshowers", "Showers", ICON_CLOUD_SUN_RAIN, ICON_CLOUD_MOON_RAIN,
-     COL_RAIN, COL_RAIN},
-    {"rainshowers", "Showers", ICON_CLOUD_SUN_RAIN, ICON_CLOUD_MOON_RAIN,
-     COL_RAIN, COL_RAIN},
-    {"heavyrainshowers", "Heavy showers", ICON_CLOUD_RAIN_WIND,
-     ICON_CLOUD_RAIN_WIND, COL_RAIN, COL_RAIN},
-    {"lightrainandthunder", "Thunder", ICON_CLOUD_LIGHTNING,
-     ICON_CLOUD_LIGHTNING, COL_THUNDER, COL_THUNDER},
-    {"rainandthunder", "Thunder", ICON_CLOUD_LIGHTNING, ICON_CLOUD_LIGHTNING,
-     COL_THUNDER, COL_THUNDER},
-    {"heavyrainandthunder", "Thunder", ICON_CLOUD_LIGHTNING,
-     ICON_CLOUD_LIGHTNING, COL_THUNDER, COL_THUNDER},
-    {"lightsnow", "Light snow", ICON_SNOWFLAKE, ICON_SNOWFLAKE, COL_SNOW,
-     COL_SNOW},
-    {"snow", "Snow", ICON_CLOUD_SNOW, ICON_CLOUD_SNOW, COL_SNOW, COL_SNOW},
-    {"heavysnow", "Heavy snow", ICON_CLOUD_SNOW, ICON_CLOUD_SNOW, COL_SNOW,
-     COL_SNOW},
-    {"lightsnowshowers", "Snow showers", ICON_CLOUD_SNOW, ICON_CLOUD_SNOW,
-     COL_SNOW, COL_SNOW},
-    {"snowshowers", "Snow showers", ICON_CLOUD_SNOW, ICON_CLOUD_SNOW, COL_SNOW,
-     COL_SNOW},
-    {"heavysnowshowers", "Heavy snow", ICON_CLOUD_SNOW, ICON_CLOUD_SNOW,
-     COL_SNOW, COL_SNOW},
-    {"snowandthunder", "Snow & thunder", ICON_CLOUD_LIGHTNING,
-     ICON_CLOUD_LIGHTNING, COL_THUNDER, COL_THUNDER},
-    {"lightsleet", "Sleet", ICON_CLOUD_HAIL, ICON_CLOUD_HAIL, COL_SLEET,
-     COL_SLEET},
-    {"sleet", "Sleet", ICON_CLOUD_HAIL, ICON_CLOUD_HAIL, COL_SLEET, COL_SLEET},
-    {"heavysleet", "Heavy sleet", ICON_CLOUD_HAIL, ICON_CLOUD_HAIL, COL_SLEET,
-     COL_SLEET},
-    {"lightsleetshowers", "Sleet", ICON_CLOUD_HAIL, ICON_CLOUD_HAIL, COL_SLEET,
-     COL_SLEET},
-    {"sleetshowers", "Sleet", ICON_CLOUD_HAIL, ICON_CLOUD_HAIL, COL_SLEET,
-     COL_SLEET},
-    {"heavysleetshowers", "Heavy sleet", ICON_CLOUD_HAIL, ICON_CLOUD_HAIL,
-     COL_SLEET, COL_SLEET},
-    {"sleetandthunder", "Sleet & thunder", ICON_CLOUD_LIGHTNING,
-     ICON_CLOUD_LIGHTNING, COL_THUNDER, COL_THUNDER},
-    {"lightssnowshowersandthunder", "Snow & thunder", ICON_CLOUD_LIGHTNING,
-     ICON_CLOUD_LIGHTNING, COL_THUNDER, COL_THUNDER},
-    {"snowshowersandthunder", "Snow & thunder", ICON_CLOUD_LIGHTNING,
-     ICON_CLOUD_LIGHTNING, COL_THUNDER, COL_THUNDER},
-    {"heavysnowshowersandthunder", "Snow & thunder", ICON_CLOUD_LIGHTNING,
-     ICON_CLOUD_LIGHTNING, COL_THUNDER, COL_THUNDER},
-    {"lightrainshowersandthunder", "Thunder", ICON_CLOUD_LIGHTNING,
-     ICON_CLOUD_LIGHTNING, COL_THUNDER, COL_THUNDER},
-    {"rainshowersandthunder", "Thunder", ICON_CLOUD_LIGHTNING,
-     ICON_CLOUD_LIGHTNING, COL_THUNDER, COL_THUNDER},
-    {"heavyrainshowersandthunder", "Thunder", ICON_CLOUD_LIGHTNING,
-     ICON_CLOUD_LIGHTNING, COL_THUNDER, COL_THUNDER},
-    {"lightssleetshowersandthunder", "Sleet & thunder", ICON_CLOUD_LIGHTNING,
-     ICON_CLOUD_LIGHTNING, COL_THUNDER, COL_THUNDER},
-    {"sleetshowersandthunder", "Sleet & thunder", ICON_CLOUD_LIGHTNING,
-     ICON_CLOUD_LIGHTNING, COL_THUNDER, COL_THUNDER},
-    {"heavysleetshowersandthunder", "Sleet & thunder", ICON_CLOUD_LIGHTNING,
-     ICON_CLOUD_LIGHTNING, COL_THUNDER, COL_THUNDER},
-    {"lightsleetandthunder", "Sleet & thunder", ICON_CLOUD_LIGHTNING,
-     ICON_CLOUD_LIGHTNING, COL_THUNDER, COL_THUNDER},
-    {"heavysleetandthunder", "Sleet & thunder", ICON_CLOUD_LIGHTNING,
-     ICON_CLOUD_LIGHTNING, COL_THUNDER, COL_THUNDER},
-    {"lightsnowandthunder", "Snow & thunder", ICON_CLOUD_LIGHTNING,
-     ICON_CLOUD_LIGHTNING, COL_THUNDER, COL_THUNDER},
-    {"heavysnowandthunder", "Snow & thunder", ICON_CLOUD_LIGHTNING,
-     ICON_CLOUD_LIGHTNING, COL_THUNDER, COL_THUNDER},
+static constexpr SymbolText SYMBOLS[] = {
+    {"clearsky", "Clear"},
+    {"fair", "Fair"},
+    {"partlycloudy", "Partly cloudy"},
+    {"cloudy", "Cloudy"},
+    {"fog", "Fog"},
+    {"lightrain", "Light rain"},
+    {"rain", "Rain"},
+    {"heavyrain", "Heavy rain"},
+    {"lightrainshowers", "Showers"},
+    {"rainshowers", "Showers"},
+    {"heavyrainshowers", "Heavy showers"},
+    {"lightrainandthunder", "Thunder"},
+    {"rainandthunder", "Thunder"},
+    {"heavyrainandthunder", "Thunder"},
+    {"lightsnow", "Light snow"},
+    {"snow", "Snow"},
+    {"heavysnow", "Heavy snow"},
+    {"lightsnowshowers", "Snow showers"},
+    {"snowshowers", "Snow showers"},
+    {"heavysnowshowers", "Heavy snow"},
+    {"snowandthunder", "Snow & thunder"},
+    {"lightsleet", "Sleet"},
+    {"sleet", "Sleet"},
+    {"heavysleet", "Heavy sleet"},
+    {"lightsleetshowers", "Sleet"},
+    {"sleetshowers", "Sleet"},
+    {"heavysleetshowers", "Heavy sleet"},
+    {"sleetandthunder", "Sleet & thunder"},
+    {"lightssnowshowersandthunder", "Snow & thunder"},
+    {"snowshowersandthunder", "Snow & thunder"},
+    {"heavysnowshowersandthunder", "Snow & thunder"},
+    {"lightrainshowersandthunder", "Thunder"},
+    {"rainshowersandthunder", "Thunder"},
+    {"heavyrainshowersandthunder", "Thunder"},
+    {"lightssleetshowersandthunder", "Sleet & thunder"},
+    {"sleetshowersandthunder", "Sleet & thunder"},
+    {"heavysleetshowersandthunder", "Sleet & thunder"},
+    {"lightsleetandthunder", "Sleet & thunder"},
+    {"heavysleetandthunder", "Sleet & thunder"},
+    {"lightsnowandthunder", "Snow & thunder"},
+    {"heavysnowandthunder", "Snow & thunder"},
 };
 
-static TimeVariant parse_symbol(const char *symbol, char *base,
-                                size_t base_len) {
-  strncpy(base, symbol, base_len - 1);
-  base[base_len - 1] = '\0';
-
-  TimeVariant variant = TimeVariant::None;
-  char *pos = strstr(base, "_polartwilight");
-  if (pos) {
-    *pos = '\0';
-    return TimeVariant::Day;
+// "rain_day" → "rain". Writes the code without its day/night/polar-twilight
+// suffix and says which one it had.
+static TimeOfDay split_symbol(const char *symbol, char *base, size_t base_len) {
+  snprintf(base, base_len, "%s", symbol);
+  if (char *sep = strchr(base, '_')) {
+    *sep = '\0';
+    return strcmp(sep + 1, "night") == 0 ? TimeOfDay::Night : TimeOfDay::Day;
   }
-  pos = strstr(base, "_night");
-  if (pos) {
-    *pos = '\0';
-    return TimeVariant::Night;
-  }
-  pos = strstr(base, "_day");
-  if (pos) {
-    *pos = '\0';
-    return TimeVariant::Day;
-  }
-  return variant;
+  return TimeOfDay::Unknown;
 }
 
-static const SymbolEntry *find_symbol(const char *base) {
+static const char *symbol_text(const char *base) {
   for (const auto &entry : SYMBOLS) {
     if (strcmp(base, entry.code) == 0)
-      return &entry;
+      return entry.text;
   }
-  return nullptr;
+  return base;
 }
 
 // ─── HTTP ───────────────────────────────────────────────────────────────────
@@ -182,20 +124,55 @@ static esp_err_t on_http_event(esp_http_client_event_t *evt) {
 
 // ─── Fetch & Parse ──────────────────────────────────────────────────────────
 
-static bool fetch_and_parse() {
-  char url[128];
-  snprintf(url, sizeof(url),
-           "https://api.met.no/weatherapi/locationforecast/2.0/"
-           "compact?lat=%s&lon=%s",
-           CONFIG_RADIO_WEATHER_LAT, CONFIG_RADIO_WEATHER_LON);
+// Symbol code from the shortest forecast period that has one.
+static const char *entry_symbol(cJSON *data) {
+  for (const char *period : {"next_1_hours", "next_6_hours", "next_12_hours"}) {
+    cJSON *next = cJSON_GetObjectItem(data, period);
+    cJSON *summary = next ? cJSON_GetObjectItem(next, "summary") : nullptr;
+    cJSON *sym =
+        summary ? cJSON_GetObjectItem(summary, "symbol_code") : nullptr;
+    if (sym && cJSON_IsString(sym))
+      return sym->valuestring;
+  }
+  return nullptr;
+}
 
+// Codes like "cloudy" don't say whether the sun is up; the next code that
+// does ("partlycloudy_night") answers for now too.
+static bool is_night(cJSON *series) {
+  int count = cJSON_GetArraySize(series);
+  for (int i = 0; i < count; i++) {
+    cJSON *entry = cJSON_GetArrayItem(series, i);
+    cJSON *data = entry ? cJSON_GetObjectItem(entry, "data") : nullptr;
+    const char *symbol = data ? entry_symbol(data) : nullptr;
+    char base[WEATHER_SYMBOL_LEN];
+    if (!symbol)
+      continue;
+    TimeOfDay t = split_symbol(symbol, base, sizeof(base));
+    if (t != TimeOfDay::Unknown)
+      return t == TimeOfDay::Night;
+  }
+  return false;
+}
+
+// Days since 1970-01-01 for a civil date
+// (howardhinnant.github.io/date_algorithms).
+static int64_t days_from_civil(int y, int m, int d) {
+  y -= m <= 2;
+  int64_t era = (y >= 0 ? y : y - 399) / 400;
+  int64_t yoe = y - era * 400;
+  int64_t doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1;
+  int64_t doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+  return era * 146097 + doe - 719468;
+}
+
+static cJSON *fetch_json(const char *url) {
   auto *raw = static_cast<uint8_t *>(
       heap_caps_malloc(RESP_BUF_SIZE, MALLOC_CAP_SPIRAM));
   if (!raw) {
     ESP_LOGE(TAG, "Failed to allocate response buffer");
-    return false;
+    return nullptr;
   }
-
   HttpBuf resp = {raw, 0, RESP_BUF_SIZE};
 
   esp_http_client_config_t cfg = {};
@@ -211,178 +188,140 @@ static bool fetch_and_parse() {
   auto *client = esp_http_client_init(&cfg);
   if (!client) {
     heap_caps_free(raw);
-    return false;
+    return nullptr;
   }
-
   esp_http_client_set_header(client, "User-Agent", USER_AGENT);
-
   esp_err_t err = esp_http_client_perform(client);
   int status = esp_http_client_get_status_code(client);
   esp_http_client_cleanup(client);
 
-  if (err != ESP_OK || status != 200) {
+  cJSON *root = nullptr;
+  if (err == ESP_OK && status == 200)
+    root = cJSON_Parse(reinterpret_cast<char *>(raw));
+  else
     ESP_LOGW(TAG, "Fetch failed: err=%s status=%d", esp_err_to_name(err),
              status);
-    heap_caps_free(raw);
-    return false;
-  }
-
-  ESP_LOGI(TAG, "Fetched %d bytes", resp.len);
-
-  cJSON *root = cJSON_Parse(reinterpret_cast<char *>(raw));
   heap_caps_free(raw);
+  return root;
+}
 
-  if (!root) {
-    ESP_LOGE(TAG, "JSON parse failed");
+static bool number(cJSON *obj, const char *key, float *out) {
+  cJSON *item = obj ? cJSON_GetObjectItem(obj, key) : nullptr;
+  if (!item || !cJSON_IsNumber(item))
     return false;
-  }
+  *out = static_cast<float>(item->valuedouble);
+  return true;
+}
 
-  bool ok = false;
+static cJSON *instant_details(cJSON *entry) {
+  cJSON *data = entry ? cJSON_GetObjectItem(entry, "data") : nullptr;
+  cJSON *instant = data ? cJSON_GetObjectItem(data, "instant") : nullptr;
+  return instant ? cJSON_GetObjectItem(instant, "details") : nullptr;
+}
+
+// High and low over the next 24 hourly entries.
+static void day_range(cJSON *series) {
+  constexpr int HOURS = 24;
+  s_data.high = s_data.low = s_data.temperature;
+  int count = std::min(cJSON_GetArraySize(series), HOURS);
+  for (int i = 0; i < count; i++) {
+    float t;
+    if (!number(instant_details(cJSON_GetArrayItem(series, i)),
+                "air_temperature", &t))
+      continue;
+    s_data.high = std::max(s_data.high, t);
+    s_data.low = std::min(s_data.low, t);
+  }
+}
+
+static bool fetch_forecast() {
+  char url[128];
+  snprintf(url, sizeof(url),
+           "https://api.met.no/weatherapi/locationforecast/2.0/"
+           "compact?lat=%s&lon=%s",
+           CONFIG_RADIO_WEATHER_LAT, CONFIG_RADIO_WEATHER_LON);
+  cJSON *root = fetch_json(url);
+  if (!root)
+    return false;
 
   cJSON *props = cJSON_GetObjectItem(root, "properties");
   cJSON *series = props ? cJSON_GetObjectItem(props, "timeseries") : nullptr;
   cJSON *first = series ? cJSON_GetArrayItem(series, 0) : nullptr;
-  cJSON *data = first ? cJSON_GetObjectItem(first, "data") : nullptr;
-
-  if (data) {
-    cJSON *instant = cJSON_GetObjectItem(data, "instant");
-    cJSON *details =
-        instant ? cJSON_GetObjectItem(instant, "details") : nullptr;
-
-    if (details) {
-      cJSON *temp = cJSON_GetObjectItem(details, "air_temperature");
-      cJSON *wind = cJSON_GetObjectItem(details, "wind_speed");
-
-      if (temp && cJSON_IsNumber(temp)) {
-        s_data.temperature = static_cast<float>(temp->valuedouble);
-        ok = true;
-      }
-      if (wind && cJSON_IsNumber(wind))
-        s_data.wind_speed = static_cast<float>(wind->valuedouble);
-    }
-
-    // Symbol code from the shortest available forecast period
-    const char *symbol = nullptr;
-    for (const char *period :
-         {"next_1_hours", "next_6_hours", "next_12_hours"}) {
-      cJSON *next = cJSON_GetObjectItem(data, period);
-      cJSON *summary = next ? cJSON_GetObjectItem(next, "summary") : nullptr;
-      cJSON *sym =
-          summary ? cJSON_GetObjectItem(summary, "symbol_code") : nullptr;
-      if (sym && cJSON_IsString(sym)) {
-        symbol = sym->valuestring;
-        break;
-      }
-    }
-
-    if (symbol) {
-      strncpy(s_data.symbol, symbol, sizeof(s_data.symbol) - 1);
-
-      char base[64];
-      TimeVariant variant = parse_symbol(symbol, base, sizeof(base));
-      bool is_night = (variant == TimeVariant::Night);
-
-      const SymbolEntry *entry = find_symbol(base);
-      if (entry) {
-        strncpy(s_data.condition, entry->text, sizeof(s_data.condition) - 1);
-        s_data.icon = is_night ? entry->icon_night : entry->icon_day;
-        s_data.color = is_night ? entry->color_night : entry->color_day;
-      } else {
-        strncpy(s_data.condition, base, sizeof(s_data.condition) - 1);
-        s_data.icon = ICON_CLOUD;
-        s_data.color = COL_CLOUD;
-      }
-    }
-
-    // Parse forecast entries, skipping nighttime hours (23:00–05:59)
-    int series_count = cJSON_GetArraySize(series);
-    s_data.forecast_count = 0;
-    int last_hour = -1;
-
-    for (int idx = 1;
-         idx < series_count && s_data.forecast_count < FORECAST_MAX; idx++) {
-      cJSON *entry = cJSON_GetArrayItem(series, idx);
-      cJSON *etime = entry ? cJSON_GetObjectItem(entry, "time") : nullptr;
-      cJSON *edata = entry ? cJSON_GetObjectItem(entry, "data") : nullptr;
-      if (!edata || !etime || !cJSON_IsString(etime))
-        continue;
-
-      // Extract hour from "YYYY-MM-DDThh:mm:ssZ"
-      const char *tstr = etime->valuestring;
-      int hour = (tstr[11] - '0') * 10 + (tstr[12] - '0');
-
-      // Skip nighttime hours
-      if (hour >= 23 || hour < 6)
-        continue;
-
-      // Keep ~3h spacing between entries
-      if (last_hour >= 0) {
-        int gap = hour - last_hour;
-        if (gap < 0)
-          gap += 24; // wrapped past midnight
-        if (gap < 3)
-          continue;
-      }
-
-      // Temperature
-      cJSON *einst = cJSON_GetObjectItem(edata, "instant");
-      cJSON *edet = einst ? cJSON_GetObjectItem(einst, "details") : nullptr;
-      cJSON *etemp =
-          edet ? cJSON_GetObjectItem(edet, "air_temperature") : nullptr;
-      if (!etemp || !cJSON_IsNumber(etemp))
-        continue;
-
-      // Symbol
-      const char *esym = nullptr;
-      for (const char *period :
-           {"next_1_hours", "next_6_hours", "next_12_hours"}) {
-        cJSON *next = cJSON_GetObjectItem(edata, period);
-        cJSON *sum = next ? cJSON_GetObjectItem(next, "summary") : nullptr;
-        cJSON *sc = sum ? cJSON_GetObjectItem(sum, "symbol_code") : nullptr;
-        if (sc && cJSON_IsString(sc)) {
-          esym = sc->valuestring;
-          break;
-        }
-      }
-
-      auto &fc = s_data.forecast[s_data.forecast_count];
-      fc.hour = hour;
-      fc.temperature = static_cast<float>(etemp->valuedouble);
-
-      if (esym) {
-        char base[64];
-        TimeVariant variant = parse_symbol(esym, base, sizeof(base));
-        bool is_night = (variant == TimeVariant::Night);
-        const SymbolEntry *fentry = find_symbol(base);
-        if (fentry) {
-          fc.icon = is_night ? fentry->icon_night : fentry->icon_day;
-          fc.color = is_night ? fentry->color_night : fentry->color_day;
-        } else {
-          fc.icon = ICON_CLOUD;
-          fc.color = COL_CLOUD;
-        }
-      } else {
-        fc.icon = ICON_CLOUD;
-        fc.color = COL_CLOUD;
-      }
-
-      last_hour = hour;
-      s_data.forecast_count++;
-    }
-  }
-
-  cJSON_Delete(root);
-
+  cJSON *details = instant_details(first);
+  bool ok = number(details, "air_temperature", &s_data.temperature);
   if (ok) {
-    s_data.valid = true;
-    ESP_LOGI(TAG, "Weather: %.1f\xC2\xB0 C, %s (%s), %d forecast entries",
-             s_data.temperature, s_data.condition, s_data.symbol,
-             s_data.forecast_count);
-    esp_event_post(APP_EVENT, APP_EVENT_WEATHER_UPDATE, &s_data, sizeof(s_data),
-                   pdMS_TO_TICKS(100));
+    number(details, "wind_speed", &s_data.wind_speed);
+    number(details, "relative_humidity", &s_data.humidity);
+    day_range(series);
+    cJSON *data = cJSON_GetObjectItem(first, "data");
+    if (const char *symbol = entry_symbol(data)) {
+      snprintf(s_data.symbol, sizeof(s_data.symbol), "%s", symbol);
+      char base[WEATHER_SYMBOL_LEN];
+      split_symbol(symbol, base, sizeof(base));
+      snprintf(s_data.condition, sizeof(s_data.condition), "%s",
+               symbol_text(base));
+    }
+    s_data.night = is_night(series);
   }
-
+  cJSON_Delete(root);
   return ok;
+}
+
+// "2026-10-17T18:02+02:00" → minutes after local midnight. The request asks
+// for local time, so the clock part is already ours.
+static int sun_minutes(cJSON *props, const char *event) {
+  cJSON *e = cJSON_GetObjectItem(props, event);
+  cJSON *t = e ? cJSON_GetObjectItem(e, "time") : nullptr;
+  int h, m;
+  if (!t || !cJSON_IsString(t) ||
+      sscanf(t->valuestring, "%*d-%*d-%*dT%d:%d", &h, &m) != 2)
+    return SUN_TIME_UNKNOWN;
+  return h * 60 + m;
+}
+
+// Sunrise and sunset change slowly, so they're looked up once a day.
+static void fetch_sun() {
+  static int fetched_yday = -1;
+  time_t now = time(nullptr);
+  tm local = {};
+  localtime_r(&now, &local);
+  if (local.tm_yday == fetched_yday)
+    return;
+
+  int64_t local_s =
+      days_from_civil(local.tm_year + 1900, local.tm_mon + 1, local.tm_mday) *
+          86400 +
+      int64_t{local.tm_hour} * 3600 + int64_t{local.tm_min} * 60 + local.tm_sec;
+  int offset_min = static_cast<int>((local_s - now) / 60);
+  char url[192];
+  snprintf(url, sizeof(url),
+           "https://api.met.no/weatherapi/sunrise/3.0/"
+           "sun?lat=%s&lon=%s&date=%04d-%02d-%02d&offset=%c%02d:%02d",
+           CONFIG_RADIO_WEATHER_LAT, CONFIG_RADIO_WEATHER_LON,
+           local.tm_year + 1900, local.tm_mon + 1, local.tm_mday,
+           offset_min < 0 ? '-' : '+', std::abs(offset_min) / 60,
+           std::abs(offset_min) % 60);
+  cJSON *root = fetch_json(url);
+  if (!root)
+    return;
+  cJSON *props = cJSON_GetObjectItem(root, "properties");
+  s_data.sunrise = props ? sun_minutes(props, "sunrise") : SUN_TIME_UNKNOWN;
+  s_data.sunset = props ? sun_minutes(props, "sunset") : SUN_TIME_UNKNOWN;
+  cJSON_Delete(root);
+  fetched_yday = local.tm_yday;
+}
+
+static bool fetch_and_parse() {
+  if (!fetch_forecast())
+    return false;
+  fetch_sun();
+  s_data.valid = true;
+  ESP_LOGI(TAG, "Weather: %.1f\xC2\xB0 C (%.0f..%.0f), %s (%s), sun %d..%d",
+           s_data.temperature, s_data.low, s_data.high, s_data.condition,
+           s_data.symbol, s_data.sunrise, s_data.sunset);
+  esp_event_post(APP_EVENT, APP_EVENT_WEATHER_UPDATE, &s_data, sizeof(s_data),
+                 pdMS_TO_TICKS(100));
+  return true;
 }
 
 // ─── Task ───────────────────────────────────────────────────────────────────

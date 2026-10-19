@@ -5,6 +5,7 @@
 #include "driver/i2c_master.h"
 #include "driver/ledc.h"
 #include "driver/spi_master.h"
+#include "esp_heap_caps.h"
 #include "esp_lcd_panel_io.h"
 #include "esp_lcd_panel_ops.h"
 #include "esp_lcd_panel_vendor.h"
@@ -15,6 +16,8 @@
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+
+#include <algorithm>
 
 static constexpr const char *TAG = "display";
 
@@ -257,6 +260,22 @@ void display_set_backlight(uint8_t percent) {
                    static_cast<ledc_channel_t>(LCD_BL_LEDC_CH));
 }
 
+// The panel's memory holds noise at power-up, which would flash until LVGL's
+// first frame lands. Paint it black before the backlight comes on.
+static void clear_panel() {
+  constexpr size_t STRIP_BYTES = LCD_H_RES * LCD_DRAW_ROWS * 2;
+  void *black = heap_caps_calloc(1, STRIP_BYTES, MALLOC_CAP_DMA);
+  if (!black)
+    return;
+  for (int y = 0; y < LCD_V_RES; y += LCD_DRAW_ROWS)
+    esp_lcd_panel_draw_bitmap(s_panel, 0, y, LCD_H_RES,
+                              std::min(y + LCD_DRAW_ROWS, LCD_V_RES), black);
+  // A command waits for the pixels queued ahead of it, so the strip is free
+  // once this returns.
+  esp_lcd_panel_disp_on_off(s_panel, true);
+  heap_caps_free(black);
+}
+
 static void init_lcd() {
   init_backlight();
 
@@ -311,6 +330,7 @@ static void init_lcd() {
   ESP_ERROR_CHECK(esp_lcd_panel_reset(s_panel));
   ESP_ERROR_CHECK(esp_lcd_panel_init(s_panel));
   ESP_ERROR_CHECK(esp_lcd_panel_mirror(s_panel, true, true));
+  clear_panel();
   ESP_ERROR_CHECK(esp_lcd_panel_disp_on_off(s_panel, true));
 
   display_set_backlight(80);
@@ -361,6 +381,9 @@ void display_init(lv_display_t **disp, lv_indev_t **touch) {
 
   lvgl_port_cfg_t port_cfg = ESP_LVGL_PORT_INIT_CONFIG();
   port_cfg.task_affinity = 1; // Pin LVGL to Core 1 (WiFi runs on Core 0)
+  // Layers (rounded sheet corners, masked lists) and screen snapshots nest
+  // deep: the radio peaks around 7 KB, right at the port's default.
+  port_cfg.task_stack = 16 * 1024;
   ESP_ERROR_CHECK(lvgl_port_init(&port_cfg));
 
   // Use field-by-field assignment to avoid C++20 designated initializer

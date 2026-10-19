@@ -1,0 +1,33 @@
+menu "Lights (IKEA TRADFRI)"
+
+    config LIGHTS_TRADFRI_HOST
+        string "TRADFRI gateway host"
+        default ""
+        help
+            The gateway's address on the local network, like
+            TRADFRI-Gateway-58d50aba16f3.local, or its IP. Empty leaves
+            lights out.
+
+    config LIGHTS_TRADFRI_CODE
+        string "TRADFRI security code"
+        default ""
+        help
+            The Security Code on the label under the gateway. It's only used
+            to pair the knob once; the key the gateway hands out is kept in
+            NVS. Keep it in sdkconfig.defaults.local, not in git.
+
+    config LIGHTS_IGNORE
+        string "Lights to leave alone"
+        default "plant"
+        help
+            Lights whose name contains this, in any case, are never switched
+            or dimmed. Empty controls them all.
+
+    config LIGHTS_IGNORE_ROOMS
+        string "Rooms to leave alone"
+        default "bedroom"
+        help
+            The lights in a room whose name contains this, in any case, are
+            never switched or dimmed. Empty controls every room.
+
+endmenu

@@ -4,7 +4,8 @@
 
 #define JD_SZBUF 512
 
-#define JD_FORMAT 1
+// RGB888, so art_decoder can dither down to RGB565 instead of truncating.
+#define JD_FORMAT 0
 /* 0: RGB888 (24-bit/pix)
 /  1: RGB565 (16-bit/pix)
 /  2: Grayscale (8-bit/pix)

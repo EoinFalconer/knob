@@ -6,9 +6,9 @@ set(SRCS
     "spotify/spotify_auth.cpp"
     "spotify/spotify_api.cpp"
     "ui/ui.cpp"
-    "fonts/geist_regular_16.c"
-    "fonts/geist_regular_22.c"
-    "fonts/geist_medium_28.c"
+    "fonts/sf_regular_16.c"
+    "fonts/sf_regular_22.c"
+    "fonts/sf_semibold_28.c"
     "ui/images/spotify_logo_32.c"
     "ui/images/spotify_logo_64.c"
 )

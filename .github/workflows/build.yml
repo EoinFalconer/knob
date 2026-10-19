@@ -7,16 +7,35 @@ on:
     branches: [main]
 
 jobs:
+  # The radio isn't built here: its fonts and ringtone are Apple's, kept out
+  # of git and made on a Mac (scripts/gen_assets.sh). Its host tests don't
+  # need them.
+  radio-host-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Host tests radio
+        run: apps/radio/test/run.sh
+
   build:
     runs-on: ubuntu-latest
     container:
       image: espressif/idf:v5.4
     strategy:
       matrix:
-        app: [radio, kaffi]
+        app: [kaffi]
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Host tests ${{ matrix.app }}
+        shell: bash
+        run: |
+          if [ -x apps/${{ matrix.app }}/test/run.sh ]; then
+            apps/${{ matrix.app }}/test/run.sh
+          fi
 
       - name: Build ${{ matrix.app }}
         shell: bash

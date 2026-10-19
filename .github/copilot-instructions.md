@@ -14,7 +14,7 @@ Key constraints:
 
 ## Monorepo structure
 
-- `components/` — Shared ESP-IDF components (knob_hal, knob_net, knob_storage, knob_ui, knob_voice, knob_sonos, knob_timer, knob_setup)
+- `components/` — Shared ESP-IDF components (knob_hal, knob_net, knob_storage, knob_ui, knob_voice, knob_sonos, knob_timer, knob_lights, knob_setup)
 - `apps/radio/` — Sonos radio app (the main product)
 - `apps/template/` — Starter template for new knob apps
 - Hardware pin definitions live in `components/knob_hal/include/hal_pins.h`

@@ -7,6 +7,7 @@ extern "C" {
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 
+#include <algorithm>
 #include <cstdlib>
 #include <cstring>
 
@@ -36,9 +37,23 @@ static size_t jpeg_input(JDEC *jd, uint8_t *buf, size_t ndata) {
   return ndata;
 }
 
+// 4x4 Bayer thresholds. Truncating 8-bit channels to RGB565 turns a smooth
+// sky into visible bands; nudging each pixel by its cell's threshold first
+// spreads the error into a fine pattern the eye averages out.
+static constexpr uint8_t BAYER[4][4] = {
+    {0, 8, 2, 10}, {12, 4, 14, 6}, {3, 11, 1, 9}, {15, 7, 13, 5}};
+
+static uint16_t dither_565(int r, int g, int b, int x, int y) {
+  int t = BAYER[y & 3][x & 3];
+  r = std::min(255, r + (t >> 1)) >> 3;
+  g = std::min(255, g + (t >> 2)) >> 2;
+  b = std::min(255, b + (t >> 1)) >> 3;
+  return static_cast<uint16_t>((r << 11) | (g << 5) | b);
+}
+
 static int jpeg_output(JDEC *jd, void *bitmap, JRECT *rect) {
   auto *dev = static_cast<JpegDevice *>(jd->device);
-  auto *src = static_cast<uint16_t *>(bitmap);
+  const auto *src = static_cast<const uint8_t *>(bitmap);
 
   int w = rect->right - rect->left + 1;
   int stride = dev->out_w;
@@ -47,20 +62,15 @@ static int jpeg_output(JDEC *jd, void *bitmap, JRECT *rect) {
     if (y >= dev->out_h)
       break;
     uint16_t *dst = dev->pixels + y * stride + rect->left;
-    int copy_w = w;
-    if (rect->left + copy_w > stride)
-      copy_w = stride - rect->left;
+    int copy_w = std::min(w, stride - rect->left);
     for (int i = 0; i < copy_w; i++) {
-      uint16_t px = src[i];
-      // TJPGD outputs BGR565 (B in high bits, R in low bits) — swap to RGB565
-      uint16_t r = px & 0x1F;
-      uint16_t g = (px >> 5) & 0x3F;
-      uint16_t b = (px >> 11) & 0x1F;
-      uint16_t rgb = (r << 11) | (g << 5) | b;
+      // TJpgDec writes each pixel as B, G, R.
+      const uint8_t *p = src + i * 3;
+      uint16_t rgb = dither_565(p[2], p[1], p[0], rect->left + i, y);
       // Byte-swap for LV_COLOR_FORMAT_RGB565_SWAPPED display
-      dst[i] = (rgb >> 8) | (rgb << 8);
+      dst[i] = static_cast<uint16_t>((rgb >> 8) | (rgb << 8));
     }
-    src += w;
+    src += w * 3;
   }
   return 1; // Continue decompression
 }

@@ -1,71 +1,149 @@
 #include "squircle.h"
 
 #include "esp_heap_caps.h"
-#include "esp_log.h"
 
+// The decoder's descriptor is only in the private header.
+#include "src/image/lv_image_decoder_private.h"
+
+#include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <utility>
 
-static constexpr const char *TAG = "squircle";
+namespace {
 
-static uint8_t *s_mask_buf;
-static lv_image_dsc_t s_mask_dsc;
-static bool s_ready;
+// Close to Apple's icon outline: about as round as a 28 px corner at 120 px,
+// but the curve starts further along the sides.
+constexpr float EXPONENT = 5.0f;
+constexpr int SUBROWS = 4; // samples per pixel row, for the edge's coverage
+constexpr int32_t MAX_SIZE = 256;
 
-void squircle_mask_init(int size, float n) {
-  if (s_ready)
-    return;
-
-  auto *buf =
-      static_cast<uint8_t *>(heap_caps_malloc(size * size, MALLOC_CAP_SPIRAM));
-  if (!buf) {
-    ESP_LOGW(TAG, "Failed to allocate %dx%d mask", size, size);
-    return;
-  }
-
-  float half = static_cast<float>(size) * 0.5f;
-  // Inset by 1px so the opaque mask fully covers logo corner pixels
-  float r = half - 1.0f;
-  float inv_r = 1.0f / r;
-  // Nearly binary edge — 0.5px AA eliminates color bleed from logo backgrounds
-  float aa = 0.5f / r;
-
-  for (int y = 0; y < size; y++) {
-    float ny = std::fabs((static_cast<float>(y) - half + 0.5f) * inv_r);
-    float ny_n = std::pow(ny, n);
-    for (int x = 0; x < size; x++) {
-      float nx = std::fabs((static_cast<float>(x) - half + 0.5f) * inv_r);
-      // Superellipse: |x/r|^n + |y/r|^n = 1
-      float d = std::pow(nx, n) + ny_n - 1.0f;
-      // d < 0 inside, d > 0 outside
-      float alpha;
-      if (d <= -aa)
-        alpha = 0.0f;
-      else if (d >= aa)
-        alpha = 1.0f;
-      else
-        alpha = (d + aa) / (2.0f * aa);
-
-      buf[y * size + x] = static_cast<uint8_t>(alpha * 255.0f + 0.5f);
+// Each row is two edges from the superellipse |u|^n + |v|^n = 1, so a pixel's
+// coverage is exact across and sampled down.
+void make_mask(uint8_t *mask, int32_t size) {
+  float half = static_cast<float>(size) / 2.0f;
+  float cover[MAX_SIZE];
+  for (int32_t y = 0; y < size; y++) {
+    std::fill(cover, cover + size, 0.0f);
+    for (int s = 0; s < SUBROWS; s++) {
+      float v = std::fabs((static_cast<float>(y) +
+                           (static_cast<float>(s) + 0.5f) / SUBROWS - half) /
+                          half);
+      if (v >= 1.0f)
+        continue;
+      float w = std::pow(1.0f - std::pow(v, EXPONENT), 1.0f / EXPONENT) * half;
+      for (int32_t x = 0; x < size; x++) {
+        auto px = static_cast<float>(x);
+        float in = std::min(half + w, px + 1.0f) - std::max(half - w, px);
+        cover[x] += std::clamp(in, 0.0f, 1.0f) / SUBROWS;
+      }
     }
+    for (int32_t x = 0; x < size; x++)
+      mask[y * size + x] = static_cast<uint8_t>(std::lround(cover[x] * 255.0f));
   }
-
-  s_mask_buf = buf;
-
-  std::memset(&s_mask_dsc, 0, sizeof(s_mask_dsc));
-  s_mask_dsc.header.magic = LV_IMAGE_HEADER_MAGIC;
-  s_mask_dsc.header.cf = LV_COLOR_FORMAT_A8;
-  s_mask_dsc.header.w = static_cast<uint32_t>(size);
-  s_mask_dsc.header.h = static_cast<uint32_t>(size);
-  s_mask_dsc.header.stride = static_cast<uint32_t>(size);
-  s_mask_dsc.data_size = static_cast<uint32_t>(size * size);
-  s_mask_dsc.data = s_mask_buf;
-
-  s_ready = true;
-  ESP_LOGI(TAG, "Squircle mask ready: %dx%d, n=%.1f (%d bytes)", size, size, n,
-           size * size);
 }
 
-const lv_image_dsc_t *squircle_mask_get() {
-  return s_ready ? &s_mask_dsc : nullptr;
+// Every caller bakes at one size, so the mask is made once.
+const uint8_t *mask_for(int32_t size) {
+  static uint8_t *s_mask;
+  static int32_t s_size;
+  if (s_size == size)
+    return s_mask;
+  heap_caps_free(s_mask);
+  s_size = 0;
+  s_mask = static_cast<uint8_t *>(heap_caps_malloc(
+      static_cast<size_t>(size) * size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+  if (!s_mask)
+    return nullptr;
+  make_mask(s_mask, size);
+  s_size = size;
+  return s_mask;
+}
+
+uint16_t over(uint16_t fg, uint16_t bg, uint8_t a, bool premultiplied) {
+  if (a == LV_OPA_COVER)
+    return fg;
+  int take = premultiplied ? int{LV_OPA_COVER} : int{a};
+  int keep = int{LV_OPA_COVER} - a;
+  auto channel = [&](int shift, int max) {
+    int f = (fg >> shift) & max;
+    int b = (bg >> shift) & max;
+    return std::min(max, (f * take + b * keep + 127) / 255) << shift;
+  };
+  return static_cast<uint16_t>(channel(11, 31) | channel(5, 63) |
+                               channel(0, 31));
+}
+
+void paint(const lv_draw_buf_t &plain, int32_t size, uint16_t *rgb) {
+  const lv_image_header_t &h = plain.header;
+  bool premultiplied = h.flags & LV_IMAGE_FLAGS_PREMULTIPLIED;
+  const uint8_t *alpha = plain.data + h.stride * h.h;
+  for (int32_t y = 0; y < size; y++) {
+    const auto *src =
+        reinterpret_cast<const uint16_t *>(plain.data + y * h.stride);
+    uint16_t *dst = rgb + y * size;
+    for (int32_t x = 0; x < size; x++) {
+      switch (h.cf) {
+      case LV_COLOR_FORMAT_RGB565:
+        dst[x] = src[x];
+        break;
+      case LV_COLOR_FORMAT_RGB565_SWAPPED:
+        dst[x] = static_cast<uint16_t>(src[x] << 8 | src[x] >> 8);
+        break;
+      case LV_COLOR_FORMAT_RGB565A8:
+        dst[x] =
+            over(src[x], dst[x], alpha[y * (h.stride / 2) + x], premultiplied);
+        break;
+      default:
+        return;
+      }
+    }
+  }
+}
+
+void paint_picture(const lv_image_dsc_t *picture, int32_t size, uint16_t *rgb) {
+  if (!picture || std::cmp_not_equal(picture->header.w, size) ||
+      std::cmp_not_equal(picture->header.h, size))
+    return;
+  // Logos are stored compressed; the decoder hands back plain pixels.
+  lv_image_decoder_dsc_t decoder;
+  if (lv_image_decoder_open(&decoder, picture, nullptr) != LV_RESULT_OK)
+    return;
+  if (decoder.decoded)
+    paint(*decoder.decoded, size, rgb);
+  lv_image_decoder_close(&decoder);
+}
+
+} // namespace
+
+uint8_t *squircle_alloc(int32_t size) {
+  return static_cast<uint8_t *>(heap_caps_malloc(
+      squircle_bytes(size), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+}
+
+void squircle_free(uint8_t *pixels) { heap_caps_free(pixels); }
+
+void squircle_bake(const lv_image_dsc_t *picture, lv_color_t color,
+                   int32_t size, uint8_t *pixels, lv_image_dsc_t *out) {
+  size = std::min(size, MAX_SIZE);
+  auto *rgb = reinterpret_cast<uint16_t *>(pixels);
+  std::fill(rgb, rgb + size * size, lv_color_to_u16(color));
+  paint_picture(picture, size, rgb);
+  uint8_t *alpha = pixels + size * size * 2;
+  const uint8_t *mask = mask_for(size);
+  if (mask)
+    memcpy(alpha, mask, static_cast<size_t>(size) * size);
+  else
+    memset(alpha, LV_OPA_COVER, static_cast<size_t>(size) * size);
+
+  // The decoder may keep what it last read from this descriptor.
+  lv_image_cache_drop(out);
+  *out = {};
+  out->header.magic = LV_IMAGE_HEADER_MAGIC;
+  out->header.cf = LV_COLOR_FORMAT_RGB565A8;
+  out->header.w = static_cast<uint32_t>(size);
+  out->header.h = static_cast<uint32_t>(size);
+  out->header.stride = static_cast<uint32_t>(size * 2);
+  out->data_size = squircle_bytes(size);
+  out->data = pixels;
 }

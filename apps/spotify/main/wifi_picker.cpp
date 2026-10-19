@@ -190,7 +190,7 @@ static void build_picker_ui() {
     s_title_lbl = lv_label_create(s_picker_bg);
     lv_label_set_text(s_title_lbl, "Select WiFi");
     lv_obj_set_style_text_color(s_title_lbl, COL_WHITE, 0);
-    lv_obj_set_style_text_font(s_title_lbl, &geist_regular_22, 0);
+    lv_obj_set_style_text_font(s_title_lbl, &sf_regular_22, 0);
     lv_obj_set_style_text_align(s_title_lbl, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_align(s_title_lbl, LV_ALIGN_TOP_MID, 0, 40);
 
@@ -227,7 +227,7 @@ static void build_picker_ui() {
         lv_obj_set_width(ssid_lbl, 200);
         lv_label_set_long_mode(ssid_lbl, LV_LABEL_LONG_CLIP);
         lv_obj_set_style_text_color(ssid_lbl, COL_WHITE, 0);
-        lv_obj_set_style_text_font(ssid_lbl, &geist_regular_16, 0);
+        lv_obj_set_style_text_font(ssid_lbl, &sf_regular_16, 0);
         lv_obj_align(ssid_lbl, LV_ALIGN_LEFT_MID, 16, 0);
 
         // Right side: saved indicator or signal
@@ -239,7 +239,7 @@ static void build_picker_ui() {
             lv_label_set_text(info_lbl, rssi_label(s_networks[i].rssi));
             lv_obj_set_style_text_color(info_lbl, COL_GREY, 0);
         }
-        lv_obj_set_style_text_font(info_lbl, &geist_regular_16, 0);
+        lv_obj_set_style_text_font(info_lbl, &sf_regular_16, 0);
         lv_obj_align(info_lbl, LV_ALIGN_RIGHT_MID, -16, 0);
 
         make_item_tappable(row);
@@ -259,7 +259,7 @@ static void build_picker_ui() {
         lv_obj_t *lbl = lv_label_create(row);
         lv_label_set_text(lbl, "+ Add new network");
         lv_obj_set_style_text_color(lbl, COL_GREEN, 0);
-        lv_obj_set_style_text_font(lbl, &geist_regular_16, 0);
+        lv_obj_set_style_text_font(lbl, &sf_regular_16, 0);
         lv_obj_align(lbl, LV_ALIGN_LEFT_MID, 16, 0);
 
         make_item_tappable(row);
@@ -271,7 +271,7 @@ static void build_picker_ui() {
     lv_label_set_text(s_status_lbl, "");
     lv_obj_set_width(s_status_lbl, 260);
     lv_obj_set_style_text_color(s_status_lbl, COL_GREY, 0);
-    lv_obj_set_style_text_font(s_status_lbl, &geist_regular_16, 0);
+    lv_obj_set_style_text_font(s_status_lbl, &sf_regular_16, 0);
     lv_obj_set_style_text_align(s_status_lbl, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_align(s_status_lbl, LV_ALIGN_BOTTOM_MID, 0, -35);
     lv_obj_add_flag(s_status_lbl, LV_OBJ_FLAG_HIDDEN);

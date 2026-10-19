@@ -1,26 +1,28 @@
+#include "alarm_sound.h"
 #include "app_config.h"
 #include "discovery.h"
 #include "encoder.h"
 #include "haptic.h"
+#include "lights.h"
 #include "settings.h"
 #include "sonos.h"
 #include "timer.h"
+#include "timer_events.h"
 #include "weather.h"
 #include "wifi_manager.h"
 
 #include "ui/ui.h"
-#include "ui/ui_timer.h"
 
 #include "esp_event.h"
 #include "esp_log.h"
 #include "esp_netif_sntp.h"
-#include "esp_timer.h"
 #include "nvs_flash.h"
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cstring>
 #include <ctime>
 
@@ -30,7 +32,6 @@ ESP_EVENT_DEFINE_BASE(APP_EVENT);
 
 static int s_volume;
 static int s_station_index;
-static esp_timer_handle_t s_timer_tick_handle;
 
 static void on_station_changed(void *, esp_event_base_t, int32_t, void *data) {
   auto index = *static_cast<int32_t *>(data);
@@ -50,8 +51,10 @@ static void on_volume_changed(void *, esp_event_base_t, int32_t, void *data) {
 
 static void on_sonos_state(void *, esp_event_base_t, int32_t, void *data) {
   auto *state = static_cast<SonosState *>(data);
+  ui_set_group(&state->group);
+  ui_set_transport_actions(state->actions);
   ui_set_play_state(state->play_state);
-  if (state->volume != s_volume) {
+  if (state->volume >= 0 && state->volume != s_volume) {
     s_volume = state->volume;
     ui_set_volume(s_volume);
   }
@@ -63,20 +66,31 @@ static void on_sonos_state(void *, esp_event_base_t, int32_t, void *data) {
   }
 }
 
-static void on_timer_tick(void *) { timer_tick(); }
-
 static void on_timer_started(void *, esp_event_base_t, int32_t, void *data) {
-  auto total = *static_cast<int32_t *>(data);
+  auto *started = static_cast<TimerStarted *>(data);
   char label[64];
   timer_get_label(label, sizeof(label));
-  ESP_LOGI(TAG, "Timer started: %ds '%s'", (int)total, label);
-  ui_timer_show(total, label);
+  ui_timer_started(started->total_s, started->left_ms, label);
 }
 
+// The kitchen chimes; the UI answers with Stop and Snooze. Without Wi-Fi the
+// knob still shows it and buzzes.
 static void on_timer_fired(void *, esp_event_base_t, int32_t, void *data) {
   auto *label = static_cast<const char *>(data);
-  ESP_LOGI(TAG, "Timer fired: %s", label ? label : "(none)");
-  haptic_buzz();
+  char url[96];
+  if (alarm_sound_url(url, sizeof(url)))
+    sonos_start_alarm(url, TIMER_ROOM);
+  else
+    ESP_LOGW(TAG, "Timer '%s' fired with no way to chime", label);
+  ui_timer_fired(label);
+}
+
+static void on_timer_cancelled(void *, esp_event_base_t, int32_t, void *) {
+  ui_timer_cancelled();
+}
+
+static void on_lights_changed(void *, esp_event_base_t, int32_t, void *data) {
+  ui_set_lights(static_cast<LightsState *>(data));
 }
 
 // ─── Weather Events ─────────────────────────────────────────────────────────
@@ -86,27 +100,39 @@ static void on_weather_update(void *, esp_event_base_t, int32_t, void *data) {
   ui_set_weather(w);
 }
 
+static std::atomic<bool> s_scanning{false};
+
 static void discover_and_connect_task(void *) {
   ui_show_scanning();
 
-  DiscoveryResult result = {};
+  static DiscoveryResult result;
   discovery_scan(&result);
 
-  if (result.count == 1) {
+  // First setup with one speaker: nothing to choose, just use it.
+  if (result.count == 1 && !settings_has_speaker()) {
     auto &speaker = result.speakers[0];
-    ESP_LOGI(TAG, "Single speaker found — auto-selecting: %s", speaker.name);
+    ESP_LOGI(TAG, "Single speaker found, auto-selecting: %s", speaker.name);
     sonos_set_speaker(speaker.ip, speaker.port);
     settings_set_speaker_name(speaker.name);
     ui_set_speaker_name(speaker.name);
-    sonos_start();
-  } else if (result.count > 1) {
-    ui_show_speaker_picker(&result);
+    ui_show_speaker_picker(nullptr);
   } else {
-    ESP_LOGW(TAG, "No speakers found — showing picker with empty state");
+    if (result.count == 0)
+      ESP_LOGW(TAG, "No speakers found, showing picker with empty state");
     ui_show_speaker_picker(&result);
   }
 
+  s_scanning = false;
   vTaskDelete(nullptr);
+}
+
+// One scan at a time: each open of the speakers sheet asks for one, and two
+// at once would share the discovery buffers.
+static void start_scan() {
+  if (s_scanning.exchange(true))
+    return;
+  xTaskCreatePinnedToCore(discover_and_connect_task, "discover", 10240, nullptr,
+                          NET_TASK_PRIO, nullptr, NET_TASK_CORE);
 }
 
 static void start_with_saved_speaker() {
@@ -118,13 +144,14 @@ static void start_with_saved_speaker() {
   ESP_LOGI(TAG, "Reconnecting to saved speaker: %s (%s)", name, ip);
   sonos_set_speaker(ip);
   ui_set_speaker_name(name[0] ? name : ip);
-  sonos_start();
 }
 
 static void on_wifi_connected(void *, esp_event_base_t, int32_t, void *) {
   ESP_LOGI(TAG, "WiFi connected");
   ui_set_wifi_status(true);
   weather_start();
+  sonos_start();
+  lights_start();
 
   // Set timezone and start NTP sync (idempotent — safe on reconnect)
   setenv("TZ", CONFIG_RADIO_TIMEZONE, 1);
@@ -132,20 +159,26 @@ static void on_wifi_connected(void *, esp_event_base_t, int32_t, void *) {
   static bool sntp_started = false;
   if (!sntp_started) {
     esp_sntp_config_t sntp_cfg = ESP_NETIF_SNTP_DEFAULT_CONFIG("pool.ntp.org");
+    sntp_cfg.sync_cb = [](timeval *) { timer_restore(); };
     esp_netif_sntp_init(&sntp_cfg);
     sntp_started = true;
     ESP_LOGI(TAG, "SNTP started, TZ=%s", CONFIG_RADIO_TIMEZONE);
   }
+  // After a crash or an update the clock is still set, so a saved timer can
+  // come back now; after a power cut it waits for the first sync.
+  timer_restore();
 
   if (settings_has_speaker()) {
     start_with_saved_speaker();
+    // A quiet scan fills the speakers sheet, so even its first swipe up shows
+    // the rooms at once instead of a spinner.
+    start_scan();
   } else if (strlen(CONFIG_RADIO_SONOS_SPEAKER_IP) > 0 &&
              strcmp(CONFIG_RADIO_SONOS_SPEAKER_IP, "192.168.1.100") != 0) {
     // Use .env-configured speaker IP directly (skip discovery)
     ESP_LOGI(TAG, "Using configured speaker: %s",
              CONFIG_RADIO_SONOS_SPEAKER_IP);
     sonos_set_speaker(CONFIG_RADIO_SONOS_SPEAKER_IP);
-    sonos_start();
 
     // Resolve speaker name from device description
     char speaker_name[64] = {};
@@ -160,8 +193,7 @@ static void on_wifi_connected(void *, esp_event_base_t, int32_t, void *) {
     settings_set_speaker_name(speaker_name);
     ui_set_speaker_name(speaker_name);
   } else {
-    xTaskCreatePinnedToCore(discover_and_connect_task, "discover", 10240,
-                            nullptr, NET_TASK_PRIO, nullptr, NET_TASK_CORE);
+    start_scan();
   }
 }
 
@@ -181,11 +213,11 @@ static void on_stop_requested(void *, esp_event_base_t, int32_t, void *) {
   sonos_stop_playback();
 }
 
+// Polling keeps running during the scan: if the user backs out of the
+// picker, the knob must still control the current room.
 static void on_speaker_rescan(void *, esp_event_base_t, int32_t, void *) {
   ESP_LOGI(TAG, "Speaker rescan requested");
-  sonos_stop();
-  xTaskCreatePinnedToCore(discover_and_connect_task, "discover", 10240, nullptr,
-                          NET_TASK_PRIO, nullptr, NET_TASK_CORE);
+  start_scan();
 }
 
 static void init_nvs() {
@@ -221,16 +253,12 @@ static void register_events() {
                              on_timer_started, nullptr);
   esp_event_handler_register(APP_EVENT, APP_EVENT_TIMER_FIRED, on_timer_fired,
                              nullptr);
+  esp_event_handler_register(APP_EVENT, APP_EVENT_TIMER_CANCELLED,
+                             on_timer_cancelled, nullptr);
   esp_event_handler_register(APP_EVENT, APP_EVENT_WEATHER_UPDATE,
                              on_weather_update, nullptr);
-}
-
-static void start_timer_tick() {
-  esp_timer_create_args_t args = {};
-  args.callback = on_timer_tick;
-  args.name = "timer_tick";
-  ESP_ERROR_CHECK(esp_timer_create(&args, &s_timer_tick_handle));
-  ESP_ERROR_CHECK(esp_timer_start_periodic(s_timer_tick_handle, 1'000'000));
+  esp_event_handler_register(APP_EVENT, APP_EVENT_LIGHTS_CHANGED,
+                             on_lights_changed, nullptr);
 }
 
 extern "C" void app_main() {
@@ -257,8 +285,7 @@ extern "C" void app_main() {
 
   weather_init();
   timer_init();
-  ui_timer_init();
-  start_timer_tick();
+  lights_init();
   wifi_manager_init();
 
   ESP_LOGI(TAG, "Init complete — station: %s, volume: %d",

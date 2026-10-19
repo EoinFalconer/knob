@@ -66,15 +66,15 @@ static char s_current_day[24] = {}; // last day shown in sticky header
 // Layout (360×360 round display, y measured from top):
 //
 //   26   WiFi dot (6px circle)
-//   60   Clock top  (geist_medium_52, ~58px tall → bottom ≈118)
-//  122   Weather row: "Mon 20  ☀  9°"  (geist_regular_20 + lucide_weather_20)
+//   60   Clock top  (sf_rounded_semibold_52, ~58px tall → bottom ≈118)
+//  122   Weather row: "Mon 20  ☀  9°"  (sf_regular_20 + lucide_weather_20)
 //  164   Divider    (1px)
 //  174   Clip panel top (height 146px → bottom 320)
 //          └─ Card (fills clip, animated via translate_y)
-//               6   "Next up" / day label  (geist_regular_16)
-//              30   Event title            (geist_medium_28, scroll-circular)
-//              82   Time range             (geist_regular_16)
-//             106   Relative time          (geist_regular_16)
+//               6   "Next up" / day label  (sf_regular_16)
+//              30   Event title            (sf_semibold_28, scroll-circular)
+//              82   Time range             (sf_regular_16)
+//             106   Relative time          (sf_regular_16)
 
 static lv_obj_t *s_screen;
 static lv_obj_t *s_wifi_dot;
@@ -555,14 +555,14 @@ static void build_screen() {
 
   // ── Clock ──
   s_lbl_time = lv_label_create(s_screen);
-  lv_obj_set_style_text_font(s_lbl_time, &geist_medium_52, 0);
+  lv_obj_set_style_text_font(s_lbl_time, &sf_rounded_semibold_52, 0);
   lv_obj_set_style_text_color(s_lbl_time, COL_TEXT, 0);
   lv_label_set_text(s_lbl_time, "--:--");
   lv_obj_align(s_lbl_time, LV_ALIGN_TOP_MID, 0, 80);
 
   // ── Weather row: "Mon 20  ☀  9°" ──
   s_lbl_weather_date = lv_label_create(s_screen);
-  lv_obj_set_style_text_font(s_lbl_weather_date, &geist_regular_20, 0);
+  lv_obj_set_style_text_font(s_lbl_weather_date, &sf_regular_20, 0);
   lv_obj_set_style_text_color(s_lbl_weather_date, COL_TEXT, 0);
   lv_label_set_text(s_lbl_weather_date, "");
   lv_obj_set_pos(s_lbl_weather_date, 100, 132);
@@ -576,7 +576,7 @@ static void build_screen() {
   lv_obj_add_flag(s_lbl_weather_icon, LV_OBJ_FLAG_HIDDEN);
 
   s_lbl_weather_temp = lv_label_create(s_screen);
-  lv_obj_set_style_text_font(s_lbl_weather_temp, &geist_regular_20, 0);
+  lv_obj_set_style_text_font(s_lbl_weather_temp, &sf_regular_20, 0);
   lv_obj_set_style_text_color(s_lbl_weather_temp, COL_TEXT, 0);
   lv_label_set_text(s_lbl_weather_temp, "");
   lv_obj_set_pos(s_lbl_weather_temp, 190, 132);
@@ -608,7 +608,7 @@ static void build_screen() {
 
   // Event title
   s_lbl_title = lv_label_create(s_card);
-  lv_obj_set_style_text_font(s_lbl_title, &geist_medium_28, 0);
+  lv_obj_set_style_text_font(s_lbl_title, &sf_semibold_28, 0);
   lv_obj_set_style_text_color(s_lbl_title, COL_TEXT, 0);
   lv_obj_set_style_text_align(s_lbl_title, LV_TEXT_ALIGN_CENTER, 0);
   lv_obj_set_width(s_lbl_title, card_w);
@@ -618,7 +618,7 @@ static void build_screen() {
 
   // Time range
   s_lbl_time_range = lv_label_create(s_card);
-  lv_obj_set_style_text_font(s_lbl_time_range, &geist_regular_16, 0);
+  lv_obj_set_style_text_font(s_lbl_time_range, &sf_regular_16, 0);
   lv_obj_set_style_text_color(s_lbl_time_range, COL_DIM, 0);
   lv_obj_set_style_text_align(s_lbl_time_range, LV_TEXT_ALIGN_CENTER, 0);
   lv_obj_set_width(s_lbl_time_range, card_w);
@@ -628,7 +628,7 @@ static void build_screen() {
   // Relative time — LV_SIZE_CONTENT width so align_to(rec_dot) hits the
   // actual text edge, not the full card width.
   s_lbl_rel = lv_label_create(s_card);
-  lv_obj_set_style_text_font(s_lbl_rel, &geist_regular_16, 0);
+  lv_obj_set_style_text_font(s_lbl_rel, &sf_regular_16, 0);
   lv_obj_set_style_text_color(s_lbl_rel, COL_ACCENT, 0);
   lv_obj_set_width(s_lbl_rel, LV_SIZE_CONTENT);
   lv_label_set_text(s_lbl_rel, "");
@@ -636,7 +636,7 @@ static void build_screen() {
 
   // Empty-state placeholder
   s_lbl_empty = lv_label_create(s_card);
-  lv_obj_set_style_text_font(s_lbl_empty, &geist_regular_18, 0);
+  lv_obj_set_style_text_font(s_lbl_empty, &sf_regular_18, 0);
   lv_obj_set_style_text_color(s_lbl_empty, COL_DIM, 0);
   lv_obj_set_style_text_align(s_lbl_empty, LV_TEXT_ALIGN_CENTER, 0);
   lv_label_set_text(s_lbl_empty, "No upcoming events");
@@ -647,7 +647,7 @@ static void build_screen() {
   //    of the sliding card when the card translates up through the header row
   //    ──
   s_lbl_section = lv_label_create(s_clip);
-  lv_obj_set_style_text_font(s_lbl_section, &geist_regular_16, 0);
+  lv_obj_set_style_text_font(s_lbl_section, &sf_regular_16, 0);
   lv_obj_set_style_text_color(s_lbl_section, COL_ACCENT, 0);
   lv_obj_set_style_text_align(s_lbl_section, LV_TEXT_ALIGN_CENTER, 0);
   lv_obj_set_width(s_lbl_section, card_w);
