@@ -1,8 +1,17 @@
 #pragma once
 
+// A headless knob: runs an app's real UI against LVGL with the firmware's
+// configuration, writes screenshots, and reports how much of the panel each
+// interaction repaints. Each app supplies sim_scenarios() and stand-ins for
+// its own services.
+
 #include "lvgl.h"
 
+#include <cstddef>
 #include <cstdint>
+
+// Called with the app's argv[1], usually a picture to stand in for artwork.
+void sim_scenarios(const char *asset_path);
 
 lv_display_t *sim_display();
 lv_indev_t *sim_touch();
@@ -28,7 +37,7 @@ uint8_t sim_backlight();
 void sim_mark(const char *label);
 
 extern bool sim_verbose;
-extern bool sim_alarm_sounding;
-// What the stand-in gateway reports; scenarios may change it.
-struct LightsState;
-extern LightsState sim_lights;
+
+// Hears every esp_event_post, for apps whose UI asks for work by event.
+using SimEventHook = void (*)(int32_t id, const void *data, size_t size);
+void sim_on_event(SimEventHook hook);

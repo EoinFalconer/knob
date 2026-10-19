@@ -4,10 +4,10 @@
 
 // How input works on the knob
 // ───────────────────────────
-// Gestures (tap, hold, swipe up) are recognized once, on the screen object,
-// and routed by UI state: idle faces, now playing, browse. The knob's turns
-// go through the same router. A widget takes a press itself only when it is a
-// control with its own handler (skip buttons, picker rows, Back).
+// Gestures (tap, hold, swipe) are recognized once, on the screen object, and
+// routed by UI state; in the radio: idle faces, now playing, browse. The
+// knob's turns go through the same router. A widget takes a press itself only
+// when it is a control with its own handler (skip buttons, picker rows, Back).
 //
 // Everything else must let presses fall through to the screen. LVGL makes
 // every lv_obj_create() clickable, and a clickable box without a handler
@@ -49,3 +49,17 @@ IconPill ui_icon_pill(lv_obj_t *parent, int height, const lv_font_t *icon_font,
 
 // Sets the label and refits the end padding to the new last letter.
 void ui_icon_pill_set_text(const IconPill &pill, const char *text);
+// Swaps the icon, from the same font, and refits around its ink.
+void ui_icon_pill_set_icon(const IconPill &pill, const char *icon,
+                           int icon_nudge_y);
+
+// The pill every home screen uses: a white veil, a lucide_18 icon and an
+// SF Medium 15 line in soft white, which ellipsizes before it outgrows the
+// round screen. Recolor through the returned objects; place it with PILL_TOP,
+// which keeps its corners 12 px inside the ring.
+constexpr int PILL_H = 30;
+constexpr int PILL_TOP = 58;
+constexpr int PILL_TEXT_MAX_W = 172;
+IconPill ui_pill(lv_obj_t *parent, const char *icon);
+// Text and icon in one color and opacity.
+void ui_pill_tint(const IconPill &pill, lv_color_t color, lv_opa_t opa);

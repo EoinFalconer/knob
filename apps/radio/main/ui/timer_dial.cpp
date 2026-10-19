@@ -2,8 +2,8 @@
 #include "fonts.h"
 #include "hal_pins.h"
 #include "ui/clock_art.h"
-#include "ui/primitives.h"
-#include "ui/ring_strips.h"
+#include "primitives.h"
+#include "ring_strips.h"
 
 #include "esp_heap_caps.h"
 

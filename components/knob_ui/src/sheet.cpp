@@ -1,8 +1,8 @@
-#include "ui/sheet.h"
+#include "sheet.h"
+#include "frost.h"
 #include "hal_pins.h"
-#include "ui/frost.h"
-#include "ui/motion.h"
-#include "ui/primitives.h"
+#include "motion.h"
+#include "primitives.h"
 
 // The cover check's verdict can only be raised through the public API.
 #include "src/core/lv_obj_event_private.h"
@@ -621,4 +621,16 @@ bool sheet_is_open(const lv_obj_t *sheet) {
 bool sheet_is_visible(const lv_obj_t *sheet) {
   const Sheet *s = find(sheet);
   return s && visible(*s);
+}
+
+void sheet_close_if_idle(lv_obj_t *sheet, uint32_t idle_ms) {
+  if (sheet_is_open(sheet) && lv_display_get_inactive_time(nullptr) >= idle_ms)
+    sheet_close(sheet);
+}
+
+lv_obj_t *sheet_add_content(lv_obj_t *sheet) {
+  lv_obj_t *content = ui_box(sheet);
+  lv_obj_set_size(content, LCD_H_RES, LCD_V_RES);
+  lv_obj_set_style_bg_color(content, lv_color_black(), LV_PART_MAIN);
+  return content;
 }

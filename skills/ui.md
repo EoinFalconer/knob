@@ -93,7 +93,7 @@ BROWSE MODE
   IDLE_MS (10 s) untouched → cancel, revert to VOLUME
 ```
 
-Browse is a strip of tiles (`ui/carousel.cpp`), like iOS paging through cards: the chosen station sits where the artwork was, with its neighbors peeking in at the sides (160 px apart, dimmed to about 30%). Opening it fades the neighbors in around the artwork; each detent glides the strip one tile (280 ms, ease-out), and a detent mid-glide retargets it from where it is, so a fast spin keeps it moving instead of restarting. The title follows the strip: it fades as a tile leaves the middle and changes at the halfway point, so it always names the tile nearest the middle. Leaving, the strip glides back to what plays (the station just picked, or the one browsing started from) as the neighbors fade, and hands over to the artwork, which looks the same. With nothing playing, leaving fades the clock in over the strip instead, which stays put underneath and hides once it's covered (`carousel_hide_after`). The artwork sits in its own slot (`s_art_slot`), hidden while browsing, so the code that shows and fades artwork can't pop it up over the strip.
+Browse is a strip of tiles (`knob_ui`'s `carousel.cpp`), like iOS paging through cards: the chosen station sits where the artwork was, with its neighbors peeking in at the sides (160 px apart, dimmed to about 30%). Opening it fades the neighbors in around the artwork; each detent glides the strip one tile (280 ms, ease-out), and a detent mid-glide retargets it from where it is, so a fast spin keeps it moving instead of restarting. The title follows the strip: it fades as a tile leaves the middle and changes at the halfway point, so it always names the tile nearest the middle. Leaving, the strip glides back to what plays (the station just picked, or the one browsing started from) as the neighbors fade, and hands over to the artwork, which looks the same. With nothing playing, leaving fades the clock in over the strip instead, which stays put underneath and hides once it's covered (`carousel_hide_after`). The artwork sits in its own slot (`s_art_slot`), hidden while browsing, so the code that shows and fades artwork can't pop it up over the strip.
 
 Keeping it smooth on the device (each detent costs about 26 ms a frame):
 
@@ -107,14 +107,14 @@ Voice mode is a separate overlay triggered by double-tap (see `skills/voice.md`)
 Gestures are recognized once, on the screen object (`on_screen_pressed` / `on_screen_released`, the long-press timer, the encoder poll), and routed by `surface()` in `ui.cpp`: `Faces`, `Playing`, `Browse`, `Page` (another pager page) or `Picker`. Each handler switches on the surface instead of testing the speakers sheet, `s_mode`, `s_idle_active` and `pages_is_home()` itself. The table above `surface()` is the source of truth for what each gesture does where.
 
 - **Only controls take presses.** A widget gets `LV_OBJ_FLAG_CLICKABLE` only if it has its own handler (skip buttons, picker rows, Back). Everything else must let presses fall through to the screen.
-- **Use `ui_box()` (`ui/primitives.h`) for layout and decoration.** `lv_obj_create()` is clickable by default, and a clickable box with no handler silently eats every tap on it. That is how the weather face once ignored taps.
+- **Use `ui_box()` (`primitives.h`) for layout and decoration.** `lv_obj_create()` is clickable by default, and a clickable box with no handler silently eats every tap on it. That is how the weather face once ignored taps.
 - **The simulator enforces this.** Every screenshot walks the screen and fails the run on a "dead tap target": a visible, clickable object with no event handler that doesn't bubble.
 - **Vertical swipes belong to sheets**, not the router; see Sheets below.
 - **Small controls get a bigger target with `ui_hit_area()`.** It's an invisible box on top of the drawn control that takes the tap and mirrors its pressed state onto the drawing. The picker's Back capsule uses one that runs from below the list to the bezel.
 
 ### Sheets
 
-`ui/sheet.{h,cpp}` makes drawers that behave like iOS sheets. The speakers sheet comes up from the bottom; the timer comes down from the top.
+`knob_ui`'s `sheet.{h,cpp}` makes drawers that behave like iOS sheets. The speakers sheet comes up from the bottom; the timer comes down from the top.
 
 - **It follows the finger.** A drag that is clearly vertical after 10 px is taken by the sheet, which then moves 1:1 with the finger, rubber-banding past fully open. The panel runs on 120 px past the screen-sized body on the side it opened from (as far as the band stretches), so a stretched sheet never shows a gap; `sheet_create` returns the body to fill.
 - **Release keeps the speed.** The sheet projects where the finger was heading (180 ms ahead) to choose open or closed, so a flick works even after a short move. The settle animation starts at the finger's speed: `motion_ease_out` starts with a slope of 1/0.23, so its duration is that times distance over speed (160 to 440 ms).
@@ -126,7 +126,7 @@ Gestures are recognized once, on the screen object (`on_screen_pressed` / `on_sc
 - **Taps on a sheet's background stop there** (`ui_absorb_taps`).
 - **Drags lead the finger.** A frame shows about 40 ms after the touch it draws, so everything dragged would trail. `sheets_track_touch` hands LVGL a point 28 ms ahead along the finger's speed over the last 40 ms (at most 24 px), as iOS predicts touches; sheets, pages and lists all follow it. Release reports the last shown point so nothing jumps back. A sheet claimed after its slop starts from where the finger came down, and anything LVGL scrolls catches up the 10 px scroll limit it otherwise drops (`sheets_scroll_with_finger` on `LV_EVENT_SCROLL_BEGIN`). It must use `lv_obj_scroll_by_raw`: `lv_obj_scroll_by` sends `LV_EVENT_SCROLL_BEGIN` again, and a slow drag recursed until the LVGL task's stack corrupted and the device rebooted.
 - **`sheet_dissolve` fades an open sheet where it is**, for when the screen underneath already shows the sheet's content and a slide would show it twice (the timer over its own idle face). It fades `opa_layered`, so the sheet fades as one picture; plain `opa` fades each part on its own, and the half-faded frost then veils whatever is under the sheet's text. Taking the sheet back up (a drag or `sheet_open`) makes it whole again.
-- **Sheets are frosted, like iOS's dark material.** When a sheet appears, `ui/frost.cpp` snapshots the screen behind it (LVGL's snapshot, so `CONFIG_LV_USE_SNAPSHOT=y`), blurs a quarter-size copy (box blur, three passes each way, about a 14 px Gaussian at full size), pushes the colors a little more saturated, darkens them, and scales back up with an ordered dither so RGB565 doesn't band. The picture stays where the screen is while the sheet moves over it, so every point keeps showing what is right behind it. It's taken once per appearance, so it doesn't follow changes behind an open sheet.
+- **Sheets are frosted, like iOS's dark material.** When a sheet appears, `frost.cpp` snapshots the screen behind it (LVGL's snapshot, so `CONFIG_LV_USE_SNAPSHOT=y`), blurs a quarter-size copy (box blur, three passes each way, about a 14 px Gaussian at full size), pushes the colors a little more saturated, darkens them, and scales back up with an ordered dither so RGB565 doesn't band. The picture stays where the screen is while the sheet moves over it, so every point keeps showing what is right behind it. It's taken once per appearance, so it doesn't follow changes behind an open sheet.
   - Only the snapshot (20-40 ms) runs on the UI task. The blur runs on a FreeRTOS worker on core 0 (`frost_begin`), and `frost_take` waits for whatever is left. It starts the moment a finger lands where a drag could open a sheet, so by the time a drag clears the slop it waits 0-25 ms; a drag recognized within a second reuses it. Opening a sheet without a finger (a pill, the knob) waits for the whole thing, about 80 ms.
   - Two output buffers, so a sheet still showing the last picture isn't drawn over. They're `RGB565_SWAPPED`, the panel's byte order (the display renders swapped natively), so drawing one is a plain copy.
 - **The sheet draws the frost itself, rounded by the image's clip radius.** `on_draw_frost` draws the screen-sized picture with `clip_radius` and `image_area` set to the sheet's own box: LVGL rounds an image to `image_area`, not to where the picture is placed, so the corners follow the sheet while the picture stays put. Don't use `clip_corner`: it drew every row near the sheet's edge, frost and content, through a layer, 7-12 ms a frame. The sheet's background is transparent while it has frost, so a `LV_EVENT_COVER_CHECK` handler tells LVGL the solid middle covers what's under it; otherwise it would draw the whole home screen under a sliding sheet. LVGL's own `blur_backdrop` style re-blurs on every frame, far too slow for a sliding panel.
@@ -171,7 +171,7 @@ From the top: the route pill (rooms that play, like AirPlay's), the artwork, the
 
 ### Icon pills
 
-Build capsules with an icon and text through `ui_icon_pill()` (`ui/primitives.h`), which spaces them on drawn ink the way the Dynamic Island insets its art. The icon's ink sits 5 px further from the leading end than from the top and bottom (a capsule's rounded ends take visual room away, so matching the vertical inset reads cramped), the text's last letter ends that same distance from the trailing end, and icon and text are 6 px apart. Both are centered on ink, the text on its capitals. The glyph metrics come from the font, so changing the text refits the padding.
+Build capsules with an icon and text through `ui_icon_pill()` (`primitives.h`); the pill every home screen shows is `ui_pill()`, already styled, which spaces them on drawn ink the way the Dynamic Island insets its art. The icon's ink sits 5 px further from the leading end than from the top and bottom (a capsule's rounded ends take visual room away, so matching the vertical inset reads cramped), the text's last letter ends that same distance from the trailing end, and icon and text are 6 px apart. Both are centered on ink, the text on its capitals. The glyph metrics come from the font, so changing the text refits the padding.
 
 - **Size the icon to the pill.** The ink should fill a bit over half the height (the route pill: 18 px Lucide in 30 px). The 22 px Lucide was too big and left uneven insets.
 - **Center asymmetric icons optically.** Blur the rendered icon into a blob and center the blob, not the ink box; pass the difference as `icon_nudge_y`. `apps/radio/sim/measure_pill.py <png> <pill top> <pill height>` prints the insets and the blob center from a sim screenshot.
@@ -179,7 +179,7 @@ Build capsules with an icon and text through `ui_icon_pill()` (`ui/primitives.h`
 
 ### Volume ring
 
-`ui/volume_ring.cpp` owns the gauge around the bezel. Callers never style it. `ring_look()` in `ui.cpp` derives one `RingLook` (color, level and track opacity, width, shown) from the surface and whether the knob is turning, and `sync_volume_ring()` is the only place that applies it. Call it after any state change.
+`knob_ui`'s `volume_ring.cpp` owns the gauge around the bezel. Callers never style it. `ring_look()` in `ui.cpp` derives one `RingLook` (color, level and track opacity, width, shown) from the surface and whether the knob is turning, and `sync_volume_ring()` is the only place that applies it. Call it after any state change.
 
 | Surface | At rest                                      | While turning                               |
 | ------- | -------------------------------------------- | ------------------------------------------- |
@@ -189,7 +189,7 @@ Build capsules with an icon and text through `ui_icon_pill()` (`ui/primitives.h`
 
 A turn swells the ring in 140 ms; letting go settles it over 420 ms. On the faces the ring sweeps out from 12 o'clock in 240 ms, and retracts back into it over 560 ms, thinning to half width and fading over the last stretch.
 
-The ring is not an `lv_arc`. LVGL draws an arc by masking every row of the area being repainted, angle by angle, so on the device anything moving inside the ring (the browse strip, a fading title) paid about 22 ms a frame for it, and the ring's own animations as much again. Instead `ui/volume_ring.cpp` rasterizes the track and the level into two A8 bitmaps in PSRAM and draws them as tinted images:
+The ring is not an `lv_arc`. LVGL draws an arc by masking every row of the area being repainted, angle by angle, so on the device anything moving inside the ring (the browse strip, a fading title) paid about 22 ms a frame for it, and the ring's own animations as much again. Instead `volume_ring.cpp` rasterizes the track and the level into two A8 bitmaps in PSRAM and draws them as tinted images:
 
 - The pixels the ring can ever cover (a 13 px band) are listed once at boot, sorted by angle. When only the ends move (opening, retracting, a volume step) only the pixels around the old and new ends are redrawn, and only those stretches are invalidated. A width change redraws the whole band (about 7 ms).
 - Color and opacity are applied when drawing, so dimming the ring for browse or fading it on the faces rasterizes nothing.
@@ -289,7 +289,7 @@ apps/radio/assets/logos/*.png
 
 ## Fonts
 
-LVGL font `.c` files live in each app's `main/fonts/`. Font declarations shared across apps are in `components/knob_ui/include/fonts.h`.
+SF font `.c` files live in each app's `main/fonts/`, the Lucide icon fonts in `components/knob_ui/src/`. Declarations are in `components/knob_ui/include/fonts.h`. Every app on the shared components gets `SHARED_FONTS` from `scripts/gen_fonts.py`, the same cut in each, so a shared component looks the same in every app.
 
 Text is Apple's SF Pro, taken from the Mac's system fonts by `scripts/gen_fonts.py`. The generated `sf_*.c` files are gitignored; `scripts/gen_assets.sh` makes any that are missing before every `test.sh` and `flash.sh` build (`--force` remakes them all). The script lists every app's fonts; add a size there, never by hand. Each size is cut from the variable font at its own optical size, so 13-22 px text gets SF Pro Text's spacing and 28 px and up SF Pro Display's, as on Apple's platforms. Big type uses SF Pro Rounded: Semibold for the timer, Regular for the clock numerals and the temperature, Black for the boot screen. A font can have OpenType features baked into its character map (lv_font_conv ignores them): `tnum` for tabular figures where a number must hold still (the calendar's clock), `case` for the colon that sits at the figures' middle. The fonts are licensed for Apple platforms only: fine for a private build, never committed or released.
 
@@ -330,14 +330,33 @@ Measure the drawn pixels, not the object boxes. The simulator's PNGs plus `magic
 - No layers in anything that moves every frame: `clip_corner`, `bitmap_mask_src`, `opa_layered` and transforms each render through an ARGB layer in PSRAM. A sheet's `sheet_dissolve` is the one deliberate exception.
 - Many small image draws cost more than one big one: each draw task opens the image decoder, and the screen is drawn in 36-row bands, so a draw that spans the screen becomes ten tasks. Skip what's outside `layer->_clip_area` in custom draws, or merge small pictures into one.
 - A `LV_LABEL_LONG_SCROLL` marquee invalidates every refresh, so titles scroll once (`scroll_once`) and then rest truncated with an ellipsis. Set text through `set_marquee_text`: Sonos resends the same title on every poll, and re-setting it would restart the pass before it moves.
-- Spinners step rather than spin. `ui/activity.cpp` is an iOS-style eight-spoke indicator that repaints only its own 42 px box, ten times a second.
+- Spinners step rather than spin. `activity.cpp` is an iOS-style eight-spoke indicator that repaints only its own 42 px box, ten times a second.
 - Keep runtime-drawn backgrounds solid: RGB565 gradients band. Gradients belong in pre-rendered JPEGs, which are dithered on decode.
 
 ### Simulator
 
-`apps/radio/sim/run.sh` renders the real `ui.cpp` headless. Run one `idf.py build` first so it has the generated `sdkconfig.h`. It prints redraw cost per interaction and writes `apps/radio/build/sim/out/*.png`. `SIM_VERBOSE=1` adds an object geometry dump. Check redraw numbers before and after any UI change.
+`apps/radio/sim/run.sh` and `apps/kaffi/sim/run.sh` render each app's real UI headless, on the shared harness in `sim/` (`sim.cmake`, `sim_main.cpp`, stand-ins for the hardware); each app adds only its scenarios and stand-ins for its own services. Run one `idf.py build` first so it has the generated `sdkconfig.h`. It prints redraw cost per interaction and writes `apps/radio/build/sim/out/*.png`. `SIM_VERBOSE=1` adds an object geometry dump. Check redraw numbers before and after any UI change.
 
 ---
+
+## Shared first
+
+Radio and kaffi look the same because they draw with the same parts, and that only holds if new UI goes into `components/knob_ui` whenever a second app could use it. Before writing a color, an opacity, a layout number or a widget into an app, look for it in `knob_ui`; if an app has its own copy of something shared, that's a bug. App code says what to show; how it looks lives here:
+
+| File (`components/knob_ui/`) | What it gives every app |
+| --- | --- |
+| `include/theme.h` | Apple's system colors, text and veil opacities |
+| `include/caption.h` | The home layout (tile, title, subtitle, detail), one-pass marquee, the fade that follows a strip |
+| `include/backdrop.h` | The screen color behind everything, crossfaded |
+| `include/carousel.h` | The tile strip: stations, offices, people |
+| `include/volume_ring.h` | The ring round the bezel and its resting look |
+| `include/primitives.h` | `ui_box`, hit areas, icon pills and `ui_pill` |
+| `include/sheet.h`, `frost.h` | Drawers, their frosted material, idle closing |
+| `include/sheet_list.h` | Lists on sheets: titles, rows in three sizes, values, Back |
+| `include/activity.h` | The spinner, and a spinner with a line |
+| `include/squircle.h` | App-icon squircles and circles baked into pictures |
+| `include/art_tint.h` | A picture's color for the screen behind it |
+| `include/motion.h` | Easing curves |
 
 ## Key Files
 
@@ -347,8 +366,10 @@ Measure the drawn pixels, not the object boxes. The simulator's PNGs plus `magic
 | ----------------------------------------- | -------------------------------------------- |
 | `components/knob_hal/src/display_idf.cpp` | ST77916 QSPI + CST816S init, LVGL port setup |
 | `components/knob_hal/include/hal_pins.h`  | Pin definitions, LCD constants               |
+| `components/knob_ui/`                     | Everything in "Shared first" above           |
 | `components/knob_ui/src/ui_pages.cpp`     | Horizontal pager, slide animations           |
 | `components/knob_ui/include/fonts.h`      | Shared font declarations                     |
+| `sim/`                                    | Headless simulator harness for every app     |
 
 ### Radio-specific (apps/radio)
 
@@ -357,13 +378,8 @@ Measure the drawn pixels, not the object boxes. The simulator's PNGs plus `magic
 | `apps/radio/main/ui/ui.cpp`           | Home screen, mode state machine, logo array  |
 | `apps/radio/main/ui/faces.cpp`        | Idle clock and weather faces                 |
 | `apps/radio/main/ui/weather_assets.*` | Generated skies and icons (don't edit)       |
-| `apps/radio/main/ui/activity.cpp`     | iOS-style activity indicator                 |
-| `apps/radio/main/ui/motion.h`         | Shared easing curves                         |
 | `apps/radio/main/ui/timer_sheet.cpp`  | Timer sheet, countdown pill                  |
 | `apps/radio/main/ui/timer_dial.cpp`   | Timer face: ticks, countdown, caption        |
-| `apps/radio/main/ui/sheet.cpp`        | Drawers: drag, settle, frost, cover check    |
-| `apps/radio/main/ui/frost.cpp`        | Blurred material behind sheets               |
-| `apps/radio/main/ui/ring_strips.h`    | Draws a ring-shaped picture in strips        |
 | `apps/radio/main/ui/splash.cpp`       | Boot screen                                  |
 | `apps/radio/main/ui/ui_voice.cpp`     | Voice mode overlay                           |
 | `apps/radio/main/ui/images/`          | Station logo C arrays                        |

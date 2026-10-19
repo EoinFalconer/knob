@@ -78,12 +78,17 @@ CONFIG_LV_USE_LZ4=y
 # LVGL QR code support (for WiFi setup screen)
 CONFIG_LV_USE_QRCODE=y
 
-# Montserrat fonts — built-in, used by the kaffi UI (no asset pipeline needed).
-# 14 also acts as fallback for accented Latin chars (é, ü, ñ, etc.)
-CONFIG_LV_FONT_MONTSERRAT_14=y
-CONFIG_LV_FONT_MONTSERRAT_20=y
-CONFIG_LV_FONT_MONTSERRAT_28=y
-CONFIG_LV_FONT_MONTSERRAT_40=y
+# Sheets frost a snapshot of the screen behind them.
+CONFIG_LV_USE_SNAPSHOT=y
+
+# The people and their photos' bookkeeping (EXT_RAM_BSS_ATTR) live in PSRAM:
+# internal RAM is short once the display's DMA buffers and the LVGL task are
+# in, and the display fails to start without them.
+CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY=y
+
+# A task that overruns its stack panics with its name instead of corrupting
+# the scheduler and boot-looping with an unreadable backtrace.
+CONFIG_FREERTOS_WATCHPOINT_END_OF_STACK=y
 
 # LVGL memory: use C stdlib malloc so large allocations go to PSRAM
 # (Kconfig choice: must explicitly disable builtin to switch)

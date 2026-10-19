@@ -52,9 +52,9 @@ struct Cmd {
 static QueueHandle_t s_cmd_queue = nullptr;
 static QueueHandle_t s_avatar_queue = nullptr;
 static esp_timer_handle_t s_refresh_timer = nullptr;
-static bool s_net_ready = false;   // one-time network init done
-static bool s_have_people = false; // at least one successful fetch
-static bool s_wifi_up = false;     // associated with an IP right now
+static bool s_net_ready = false;          // one-time network init done
+static bool s_have_people = false;        // at least one successful fetch
+static bool s_wifi_up = false;            // associated with an IP right now
 static volatile uint32_t s_last_ok_s = 0; // uptime of last successful fetch
 
 static uint32_t uptime_s() {
@@ -113,7 +113,7 @@ static void cmd_task(void *) {
     case Cmd::Type::Log:
       log_or_queue(cmd.log);
       if (s_wifi_up) {
-        flush_pending();            // older taps go out first
+        flush_pending();           // older taps go out first
         sanity_api_fetch_people(); // reflect the new total
       }
       break;
@@ -128,7 +128,7 @@ static void cmd_task(void *) {
         // Nothing on screen yet — keep trying rather than parking on an
         // error. Once people are loaded, the periodic refresh heals things
         // quietly instead.
-        ui_set_status("Can't reach Sanity\nRetrying...");
+        ui_set_status("Can't reach Sanity.\nTrying again\u2026");
         vTaskDelay(pdMS_TO_TICKS(5000));
         Cmd retry;
         retry.type = Cmd::Type::Refresh;
@@ -190,7 +190,7 @@ static void on_wifi_connected(void *, esp_event_base_t, int32_t, void *) {
   }
 
   if (!s_have_people)
-    ui_set_status("Loading people...");
+    ui_set_status("Loading people\u2026");
 
   // Anything queued while offline goes out before the refresh so the new
   // totals include it.
@@ -209,7 +209,7 @@ static void on_wifi_disconnected(void *, esp_event_base_t, int32_t, void *) {
   // With people already loaded the knob keeps working from memory — a blip
   // shouldn't yank the screen away. Reconnect refetches in the background.
   if (!s_have_people)
-    ui_set_status("WiFi disconnected\nReconnecting...");
+    ui_set_status("Wi-Fi dropped.\nReconnecting\u2026");
 }
 
 static void on_people_update(void *, esp_event_base_t, int32_t, void *data) {
@@ -270,7 +270,8 @@ static void health_timer_cb(void *) {
   uint32_t stale = uptime_s() - s_last_ok_s;
   if (stale < KAFFI_UNHEALTHY_REBOOT_S)
     return;
-  ESP_LOGE(TAG, "No Sanity fetch for %lu s (wifi %s, free heap %lu) — rebooting",
+  ESP_LOGE(TAG,
+           "No Sanity fetch for %lu s (wifi %s, free heap %lu) — rebooting",
            static_cast<unsigned long>(stale), s_wifi_up ? "up" : "down",
            static_cast<unsigned long>(esp_get_free_heap_size()));
   esp_restart();
@@ -304,12 +305,14 @@ extern "C" void app_main() {
   kaffi_pending_init();
 
   s_cmd_queue = xQueueCreate(8, sizeof(Cmd));
-  xTaskCreatePinnedToCore(cmd_task, "kaffi_cmd", 8192, nullptr, 5, nullptr, 1);
+  // Fetching, parsing and decoding stay off core 1, where LVGL draws: there
+  // they took turns with it, and the strip stuttered while photos loaded.
+  xTaskCreatePinnedToCore(cmd_task, "kaffi_cmd", 8192, nullptr, 5, nullptr, 0);
 
   // Avatar preloads run at lower priority so logging stays snappy.
   s_avatar_queue = xQueueCreate(KAFFI_MAX_PEOPLE + 4, sizeof(AvatarReq));
-  xTaskCreatePinnedToCore(avatar_task, "kaffi_avatar", 8192, nullptr, 4,
-                          nullptr, 1);
+  xTaskCreatePinnedToCore(avatar_task, "kaffi_avatar", 8192, nullptr, 3,
+                          nullptr, 0);
 
   esp_event_loop_create_default();
   esp_event_handler_register(APP_EVENT, APP_EVENT_WIFI_CONNECTED,
@@ -353,7 +356,7 @@ extern "C" void app_main() {
     wifi_setup_start("kaffi"); // blocks until credentials verified
   }
 
-  ui_set_status("Connecting to WiFi...");
+  ui_set_status("Connecting to Wi-Fi\u2026");
   wifi_manager_init();
 
   esp_timer_create_args_t ota_args = {};

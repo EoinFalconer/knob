@@ -2,6 +2,7 @@
 #include "../main/ui/face_palette.h"
 #include "../main/ui/now_playing.h"
 #include "../main/ui/weather_kind.h"
+#include "art_tint.h"
 #include "sonos_group.h"
 
 #include <cstdio>

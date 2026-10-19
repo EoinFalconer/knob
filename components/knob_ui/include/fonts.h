@@ -3,7 +3,9 @@
 #include "lvgl.h"
 
 // Apple's SF Pro, cut per size at its optical size, and SF Pro Rounded for
-// big numerals (scripts/gen_fonts.py). Each app compiles the ones it uses.
+// big numerals (scripts/gen_fonts.py). Each app compiles the ones it uses;
+// every app on the shared components gets SHARED_FONTS there, the same cut.
+// The Lucide icon fonts are open source and live here in knob_ui.
 extern const lv_font_t sf_regular_16;
 extern const lv_font_t sf_regular_18;
 extern const lv_font_t sf_regular_20;
@@ -19,11 +21,14 @@ extern const lv_font_t
 // Tabular digits, space and a colon centered on the figures.
 extern const lv_font_t sf_rounded_semibold_52;
 extern const lv_font_t sf_rounded_semibold_84;
-extern const lv_font_t sf_rounded_black_200; // B, K, N and O only
+extern const lv_font_t sf_rounded_semibold_48; // capital initials only
+extern const lv_font_t sf_rounded_black_200;   // B, K, N and O only
 
 extern const lv_font_t lucide_22;
 extern const lv_font_t lucide_48; // artwork placeholder glyphs only
-extern const lv_font_t lucide_18; // ICON_SPEAKER and ICON_TIMER only
+// Pill icons, shared like lucide_22: ICON_SPEAKER, ICON_TIMER, ICON_CHECK,
+// ICON_FLAME, ICON_WIFI_OFF, ICON_UPLOAD and ICON_COFFEE.
+extern const lv_font_t lucide_18;
 extern const lv_font_t lucide_34; // ICON_LIGHTBULB(_OFF) only
 extern const lv_font_t lucide_weather_20;
 
@@ -47,6 +52,11 @@ extern const lv_font_t lucide_weather_20;
 #define ICON_VOLUME "\xEE\x86\xAB"        // U+E1AB
 #define ICON_X "\xEE\x86\xB2"             // U+E1B2
 #define ICON_TIMER "\xEE\x87\xA0"         // U+E1E0, lucide_18 only
+#define ICON_FLAME "\xEE\x83\x92"         // U+E0D2, lucide_18 only
+#define ICON_WIFI_OFF "\xEE\x86\xAF"      // U+E1AF, lucide_18 only
+#define ICON_UPLOAD "\xEE\x82\x91"        // U+E091 cloud-upload, lucide_18
+#define ICON_COFFEE "\xEE\x82\x96"        // U+E096, lucide_18 only
+// ICON_CHECK is in both lucide_18 and lucide_22.
 #define ICON_LIGHTBULB "\xEE\x87\x82"     // U+E1C2, lucide_34 only
 #define ICON_LIGHTBULB_OFF "\xEE\x88\x88" // U+E208, lucide_34 only
 

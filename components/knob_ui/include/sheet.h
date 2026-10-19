@@ -47,6 +47,11 @@ void sheets_track_touch(lv_indev_t *touch);
 // finger instead of the scroll limit behind it.
 void sheets_scroll_with_finger(lv_event_t *e);
 
+// A screen-sized box on the sheet for content that's rebuilt as it appears:
+// lv_obj_clean() it and fill it again, the sheet itself (and its grabber)
+// stays. Not drawn; its black only shades things like the activity spinner.
+lv_obj_t *sheet_add_content(lv_obj_t *sheet);
+
 void sheet_open(lv_obj_t *sheet);
 void sheet_close(lv_obj_t *sheet);
 // Closes an open sheet at rest by fading it where it is, for when what's
@@ -63,3 +68,7 @@ void sheet_draw_material(lv_obj_t *sheet, lv_layer_t *layer,
 bool sheet_is_open(const lv_obj_t *sheet);
 // On screen at all: open, opening, closing or being dragged.
 bool sheet_is_visible(const lv_obj_t *sheet);
+// Closes an open sheet once nothing has touched the screen or turned the
+// knob for `idle_ms`; for a periodic timer. LVGL's own inactivity clock sees
+// every touch, even on rows that take the press themselves.
+void sheet_close_if_idle(lv_obj_t *sheet, uint32_t idle_ms);

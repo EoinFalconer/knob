@@ -14,13 +14,14 @@ namespace {
 
 // Close to Apple's icon outline: about as round as a 28 px corner at 120 px,
 // but the curve starts further along the sides.
-constexpr float EXPONENT = 5.0f;
+constexpr float SQUIRCLE = 5.0f;
+constexpr float CIRCLE = 2.0f;
 constexpr int SUBROWS = 4; // samples per pixel row, for the edge's coverage
 constexpr int32_t MAX_SIZE = 256;
 
 // Each row is two edges from the superellipse |u|^n + |v|^n = 1, so a pixel's
 // coverage is exact across and sampled down.
-void make_mask(uint8_t *mask, int32_t size) {
+void make_mask(uint8_t *mask, int32_t size, float exponent) {
   float half = static_cast<float>(size) / 2.0f;
   float cover[MAX_SIZE];
   for (int32_t y = 0; y < size; y++) {
@@ -31,7 +32,7 @@ void make_mask(uint8_t *mask, int32_t size) {
                           half);
       if (v >= 1.0f)
         continue;
-      float w = std::pow(1.0f - std::pow(v, EXPONENT), 1.0f / EXPONENT) * half;
+      float w = std::pow(1.0f - std::pow(v, exponent), 1.0f / exponent) * half;
       for (int32_t x = 0; x < size; x++) {
         auto px = static_cast<float>(x);
         float in = std::min(half + w, px + 1.0f) - std::max(half - w, px);
@@ -43,21 +44,30 @@ void make_mask(uint8_t *mask, int32_t size) {
   }
 }
 
-// Every caller bakes at one size, so the mask is made once.
-const uint8_t *mask_for(int32_t size) {
-  static uint8_t *s_mask;
-  static int32_t s_size;
-  if (s_size == size)
-    return s_mask;
-  heap_caps_free(s_mask);
-  s_size = 0;
-  s_mask = static_cast<uint8_t *>(heap_caps_malloc(
-      static_cast<size_t>(size) * size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-  if (!s_mask)
-    return nullptr;
-  make_mask(s_mask, size);
-  s_size = size;
-  return s_mask;
+// Apps bake at a size or two, so each mask is made once.
+struct Mask {
+  float exponent;
+  int32_t size;
+  uint8_t *alpha;
+};
+constexpr int MASKS = 4;
+Mask s_masks[MASKS];
+int s_next_mask;
+
+const uint8_t *mask_for(int32_t size, float exponent) {
+  for (const Mask &m : s_masks)
+    if (m.alpha && m.size == size && m.exponent == exponent)
+      return m.alpha;
+  Mask &m = s_masks[s_next_mask];
+  s_next_mask = (s_next_mask + 1) % MASKS;
+  heap_caps_free(m.alpha);
+  m = {exponent, size,
+       static_cast<uint8_t *>(
+           heap_caps_malloc(static_cast<size_t>(size) * size,
+                            MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT))};
+  if (m.alpha)
+    make_mask(m.alpha, size, exponent);
+  return m.alpha;
 }
 
 uint16_t over(uint16_t fg, uint16_t bg, uint8_t a, bool premultiplied) {
@@ -114,23 +124,14 @@ void paint_picture(const lv_image_dsc_t *picture, int32_t size, uint16_t *rgb) {
   lv_image_decoder_close(&decoder);
 }
 
-} // namespace
-
-uint8_t *squircle_alloc(int32_t size) {
-  return static_cast<uint8_t *>(heap_caps_malloc(
-      squircle_bytes(size), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-}
-
-void squircle_free(uint8_t *pixels) { heap_caps_free(pixels); }
-
-void squircle_bake(const lv_image_dsc_t *picture, lv_color_t color,
-                   int32_t size, uint8_t *pixels, lv_image_dsc_t *out) {
+void bake(const lv_image_dsc_t *picture, lv_color_t color, int32_t size,
+          uint8_t *pixels, lv_image_dsc_t *out, float exponent) {
   size = std::min(size, MAX_SIZE);
   auto *rgb = reinterpret_cast<uint16_t *>(pixels);
   std::fill(rgb, rgb + size * size, lv_color_to_u16(color));
   paint_picture(picture, size, rgb);
   uint8_t *alpha = pixels + size * size * 2;
-  const uint8_t *mask = mask_for(size);
+  const uint8_t *mask = mask_for(size, exponent);
   if (mask)
     memcpy(alpha, mask, static_cast<size_t>(size) * size);
   else
@@ -146,4 +147,23 @@ void squircle_bake(const lv_image_dsc_t *picture, lv_color_t color,
   out->header.stride = static_cast<uint32_t>(size * 2);
   out->data_size = squircle_bytes(size);
   out->data = pixels;
+}
+
+} // namespace
+
+uint8_t *squircle_alloc(int32_t size) {
+  return static_cast<uint8_t *>(heap_caps_malloc(
+      squircle_bytes(size), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+}
+
+void squircle_free(uint8_t *pixels) { heap_caps_free(pixels); }
+
+void squircle_bake(const lv_image_dsc_t *picture, lv_color_t color,
+                   int32_t size, uint8_t *pixels, lv_image_dsc_t *out) {
+  bake(picture, color, size, pixels, out, SQUIRCLE);
+}
+
+void circle_bake(const lv_image_dsc_t *picture, lv_color_t color, int32_t size,
+                 uint8_t *pixels, lv_image_dsc_t *out) {
+  bake(picture, color, size, pixels, out, CIRCLE);
 }

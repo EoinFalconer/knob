@@ -1,4 +1,4 @@
-#include "ui/primitives.h"
+#include "primitives.h"
 
 #include <cstring>
 #include <initializer_list>
@@ -104,24 +104,18 @@ IconPill ui_icon_pill(lv_obj_t *parent, int height, const lv_font_t *icon_font,
 
   p.icon = lv_label_create(p.pill);
   lv_obj_set_style_text_font(p.icon, icon_font, LV_PART_MAIN);
-  lv_label_set_text(p.icon, icon);
-  Ink glyph = ink_of(icon_font, icon_letter(p));
-  lv_obj_set_style_translate_y(p.icon, glyph.center_dy + icon_nudge_y,
-                               LV_PART_MAIN);
-  lv_obj_set_style_pad_left(
-      p.pill, (height - glyph.height) / 2 + PILL_END_EXTRA - glyph.left,
-      LV_PART_MAIN);
-
   p.label = lv_label_create(p.pill);
   lv_obj_set_style_text_font(p.label, text_font, LV_PART_MAIN);
   lv_obj_set_style_translate_y(p.label, ink_of(text_font, 'H').center_dy,
                                LV_PART_MAIN);
-  ui_icon_pill_set_text(p, "");
+  lv_label_set_text(p.label, "");
+  ui_icon_pill_set_icon(p, icon, icon_nudge_y);
   return p;
 }
 
-void ui_icon_pill_set_text(const IconPill &p, const char *text) {
-  lv_label_set_text(p.label, text);
+// Spaces the text off the icon and the pill's end by their ink.
+static void refit(const IconPill &p) {
+  const char *text = lv_label_get_text(p.label);
   const lv_font_t *icon_font = lv_obj_get_style_text_font(p.icon, LV_PART_MAIN);
   const lv_font_t *text_font =
       lv_obj_get_style_text_font(p.label, LV_PART_MAIN);
@@ -134,3 +128,23 @@ void ui_icon_pill_set_text(const IconPill &p, const char *text) {
   lv_obj_set_style_pad_right(p.pill, inset + PILL_END_EXTRA - last.right,
                              LV_PART_MAIN);
 }
+
+void ui_icon_pill_set_icon(const IconPill &p, const char *icon,
+                           int icon_nudge_y) {
+  lv_label_set_text(p.icon, icon);
+  const lv_font_t *icon_font = lv_obj_get_style_text_font(p.icon, LV_PART_MAIN);
+  Ink glyph = ink_of(icon_font, icon_letter(p));
+  int height = lv_obj_get_style_height(p.pill, LV_PART_MAIN);
+  lv_obj_set_style_translate_y(p.icon, glyph.center_dy + icon_nudge_y,
+                               LV_PART_MAIN);
+  lv_obj_set_style_pad_left(
+      p.pill, (height - glyph.height) / 2 + PILL_END_EXTRA - glyph.left,
+      LV_PART_MAIN);
+  refit(p);
+}
+
+void ui_icon_pill_set_text(const IconPill &p, const char *text) {
+  lv_label_set_text(p.label, text);
+  refit(p);
+}
+

@@ -1,27 +1,32 @@
 #include "ui.h"
+#include "activity.h"
 #include "app_config.h"
 #include "art_decoder.h"
+#include "art_tint.h"
+#include "backdrop.h"
+#include "caption.h"
+#include "carousel.h"
 #include "display.h"
 #include "encoder.h"
 #include "fonts.h"
 #include "haptic.h"
+#include "motion.h"
+#include "primitives.h"
 #include "settings.h"
+#include "sheet.h"
+#include "sheet_list.h"
 #include "sonos.h"
 #include "sonos_group.h"
 #include "squircle.h"
-#include "ui/activity.h"
-#include "ui/carousel.h"
+#include "theme.h"
 #include "ui/faces.h"
 #include "ui/images/images.h"
-#include "ui/motion.h"
 #include "ui/now_playing.h"
-#include "ui/primitives.h"
-#include "ui/sheet.h"
 #include "ui/splash.h"
 
 #include "ui/timer_sheet.h"
-#include "ui/volume_ring.h"
 #include "ui_pages.h"
+#include "volume_ring.h"
 
 #include "esp_heap_caps.h"
 
@@ -64,28 +69,17 @@ static constexpr int ENCODER_POLL_MS = 20;
 static constexpr int ANIM_FADE_MS = 200;
 static constexpr int ANIM_QUICK_MS = 100;
 
-static constexpr int ANIM_BG_FADE_MS = 250;
-
 // Volume ring. Turning the knob swells it; letting go settles it back slower,
 // so the change is felt at once but never snaps away.
-static constexpr uint8_t RING_W_REST = 4;
 static constexpr uint8_t RING_W_ACTIVE = 8;
 static constexpr uint8_t RING_W_FACES = 6;
-static constexpr lv_opa_t RING_LEVEL_OPA_REST = 110;
 static constexpr lv_opa_t RING_LEVEL_OPA_BROWSE = 56;
-static constexpr lv_opa_t RING_TRACK_OPA = 28;
 static constexpr lv_opa_t RING_TRACK_OPA_ACTIVE = 46;
 static constexpr lv_opa_t RING_TRACK_OPA_FACES = 56;
 static constexpr uint32_t RING_SWELL_MS = 140;
 static constexpr uint32_t RING_SETTLE_MS = 420;
 static constexpr uint32_t RING_ENTER_MS = 240;
 static constexpr uint32_t RING_RETRACT_MS = 560;
-static constexpr uint32_t COL_SOURCE_NO_ART = 0x141414;
-static constexpr int MARQUEE_DELAY_MS = 2500;
-static constexpr int MARQUEE_PX_PER_S = 30;
-static constexpr lv_opa_t TEXT_OPA_SECONDARY = LV_OPA_60;
-static constexpr lv_opa_t TEXT_OPA_BROWSE = LV_OPA_80;
-static constexpr lv_opa_t TEXT_OPA_TERTIARY = LV_OPA_50;
 // How long the faces take to fade in over the home screen (faces.cpp).
 static constexpr uint32_t FACES_FADE_MS = 300;
 
@@ -96,20 +90,9 @@ static constexpr int BACKLIGHT_FADE_STEP_MS = 30;
 static constexpr int ART_BUF_SIZE = 256 * 1024;
 static constexpr int ART_SIZE = 120; // artwork widget size (px)
 
-// Now playing, from the top: the route pill, the artwork, then the text. The
-// pill weighs down the top so the block sits a touch above center, where a
-// round face reads as balanced.
-// The pill's top corners must clear the volume ring's inner edge by 12 px;
-// this far down there is room for its widest label.
-static constexpr int ROUTE_TOP = 58;
-static constexpr int ROUTE_H = 30;
-static constexpr int ROUTE_TEXT_MAX_W = 172;
-// Blurred, Lucide's speaker centers within 0.3 px of its ink box.
-static constexpr int ROUTE_ICON_NUDGE_Y = 0;
-static constexpr int ART_Y = -12;
-static constexpr int TITLE_Y = 76;
-static constexpr int SUBTITLE_Y = 102;
-static constexpr int POSITION_Y = 126;
+// Now playing is laid out like every home screen (caption.h): the route
+// pill, the artwork, then the text. The pill weighs down the top so the block
+// sits a touch above center, where a round face reads as balanced.
 static constexpr int EXTERNAL_IDLE_TIMEOUT_MS = 300000; // 5 minutes
 
 // ─── Palette
@@ -117,30 +100,6 @@ static constexpr int EXTERNAL_IDLE_TIMEOUT_MS = 300000; // 5 minutes
 
 #define COL_BG lv_color_hex(0x000000)
 #define COL_TEXT lv_color_hex(0xFFFFFF)
-#define COL_TEXT_SEC lv_color_hex(0x8E8E93)
-
-#define COL_GREEN lv_color_hex(0x30D158)
-#define COL_ORANGE lv_color_hex(0xFF9F0A)
-#define COL_RED lv_color_hex(0xFF453A)
-#define COL_BROWSE_BG lv_color_hex(0x0A0A0A)
-// Rows sit on the frosted sheet as white veils, like iOS cells on a material,
-// so the color behind shows through.
-static constexpr lv_opa_t ROW_OPA = 26;
-static constexpr lv_opa_t ROW_FOCUS_OPA = 50;
-static constexpr lv_opa_t ROW_PRESSED_OPA = 72;
-static constexpr lv_opa_t ROW_RING_OPA = 110;
-static constexpr lv_opa_t BACK_OPA = 38;
-static constexpr lv_opa_t BACK_PRESSED_OPA = 70;
-#define COL_ART_PLACEHOLDER lv_color_hex(0x2C2C2E)
-
-// Speaker rows are pills. A circle nested in a pill sits concentric only when
-// its gap to the edge is the same on every side: gap = row radius - circle
-// radius (cloudfour.com/thinks/the-math-behind-nesting-rounded-corners).
-static constexpr int ROW_W = 240;
-static constexpr int ROW_H = 50;
-static constexpr int ROW_CIRCLE = 28;
-static constexpr int ROW_INSET = ROW_H / 2 - ROW_CIRCLE / 2;
-static constexpr int ROW_TEXT_X = ROW_INSET + ROW_CIRCLE + 8;
 
 // ─── State
 // ──────────────────────────────────────────────────────────────────────────────
@@ -170,8 +129,6 @@ static lv_obj_t *s_home;
 static lv_obj_t *s_wifi_dot;
 
 // Background (two solid color layers for tear-free crossfade)
-static lv_obj_t *s_bg_back; // Bottom layer: current station color, fully opaque
-static lv_obj_t *s_bg_front; // Top layer: fades in with new station color
 
 // Artwork area (center)
 static lv_obj_t *s_img_logo;
@@ -241,7 +198,6 @@ static uint32_t s_art_tint;      // background color picked from the art
 static lv_obj_t *s_speaker_sheet;
 static lv_obj_t *s_speaker_content; // rebuilt; the sheet's grabber isn't
 static bool s_speaker_list_stale = true;
-static lv_obj_t *s_picker_spinner;
 static lv_obj_t *s_picker_list;
 static DiscoveryResult s_discovered;
 static int s_speaker_highlight;
@@ -276,72 +232,12 @@ static void set_logo(int index) {
     lv_obj_add_flag(s_art_placeholder, LV_OBJ_FLAG_HIDDEN);
 }
 
-// ─── Background Crossfade (two-layer solid color opacity fade — tear-free)
-// ─────────────────────────────────────────────────────
-//
-// Two full-screen solid color layers stacked. Transition: front layer gets the
-// new station color and fades from transparent → opaque. Filling a solid rect
-// is near-zero CPU cost — no image blending. Per-frame opacity delta is tiny,
-// making any mid-flush DMA split invisible even with the 36-row buffer.
-
-static void anim_bg_crossfade_cb(void *obj, int32_t v) {
-  lv_obj_set_style_bg_opa(static_cast<lv_obj_t *>(obj), v, LV_PART_MAIN);
-}
-
-static void anim_bg_crossfade_done(lv_anim_t *a) {
-  // Front is now fully opaque — copy its color to back and reset front.
-  lv_color_t c = lv_obj_get_style_bg_color(s_bg_front, LV_PART_MAIN);
-  lv_obj_set_style_bg_color(s_bg_back, c, LV_PART_MAIN);
-  lv_obj_set_style_bg_opa(s_bg_front, LV_OPA_TRANSP, LV_PART_MAIN);
-  if (s_logo_container)
-    lv_obj_set_style_bg_color(s_logo_container, c, LV_PART_MAIN);
-}
-
-static void set_bg_color(lv_color_t target, bool animate) {
-  // If a crossfade is in progress, finish it immediately
-  lv_anim_delete(s_bg_front, anim_bg_crossfade_cb);
-  int32_t front_opa = lv_obj_get_style_bg_opa(s_bg_front, LV_PART_MAIN);
-  if (front_opa > LV_OPA_TRANSP) {
-    // Collapse mid-fade: promote front to back
-    lv_color_t fc = lv_obj_get_style_bg_color(s_bg_front, LV_PART_MAIN);
-    lv_obj_set_style_bg_color(s_bg_back, fc, LV_PART_MAIN);
-    lv_obj_set_style_bg_opa(s_bg_front, LV_OPA_TRANSP, LV_PART_MAIN);
-  }
-
-  // Already showing this color?
-  lv_color_t current = lv_obj_get_style_bg_color(s_bg_back, LV_PART_MAIN);
-  if (current.red == target.red && current.green == target.green &&
-      current.blue == target.blue)
-    return;
-
-  if (!animate) {
-    lv_obj_set_style_bg_color(s_bg_back, target, LV_PART_MAIN);
-    lv_obj_set_style_bg_opa(s_bg_front, LV_OPA_TRANSP, LV_PART_MAIN);
-    if (s_logo_container)
-      lv_obj_set_style_bg_color(s_logo_container, target, LV_PART_MAIN);
-    return;
-  }
-
-  // Set front to new color, crossfade its opacity
-  lv_obj_set_style_bg_color(s_bg_front, target, LV_PART_MAIN);
-
-  lv_anim_t a;
-  lv_anim_init(&a);
-  lv_anim_set_var(&a, s_bg_front);
-  lv_anim_set_exec_cb(&a, anim_bg_crossfade_cb);
-  lv_anim_set_values(&a, LV_OPA_TRANSP, LV_OPA_COVER);
-  lv_anim_set_duration(&a, ANIM_BG_FADE_MS);
-  lv_anim_set_path_cb(&a, lv_anim_path_ease_in_out);
-  lv_anim_set_completed_cb(&a, anim_bg_crossfade_done);
-  lv_anim_start(&a);
-}
-
 // The station's color for radio, the artwork's tint for anything else.
 static void update_bg(bool animate) {
   uint32_t color = STATIONS[s_station_index].color;
   if (s_external_playing)
-    color = s_art_pixels ? s_art_tint : COL_SOURCE_NO_ART;
-  set_bg_color(lv_color_hex(color), animate);
+    color = s_art_pixels ? s_art_tint : ART_TINT_NONE;
+  backdrop_set(lv_color_hex(color), animate);
 }
 
 // ─── Forward Declarations
@@ -374,50 +270,8 @@ static void anim_hide_done(lv_anim_t *a) {
   lv_obj_add_flag(static_cast<lv_obj_t *>(a->var), LV_OBJ_FLAG_HIDDEN);
 }
 
-static void rest_truncated(lv_anim_t *a) {
-  auto *label = static_cast<lv_obj_t *>(a->var);
-  // Dot mode wraps first and only cuts at the height, so pin it to one line.
-  const lv_font_t *font = lv_obj_get_style_text_font(label, LV_PART_MAIN);
-  lv_obj_set_height(label, lv_font_get_line_height(font));
-  lv_label_set_long_mode(label, LV_LABEL_LONG_DOT);
-}
-
-// Long titles scroll through once after a pause, then rest truncated the way
-// iOS does. An endless marquee repaints its strip on every frame for as long
-// as the track plays.
-static void scroll_once(lv_obj_t *label) {
-  static lv_anim_t marquee;
-  static bool ready;
-  if (!ready) {
-    lv_anim_init(&marquee);
-    marquee.act_time = -MARQUEE_DELAY_MS;
-    lv_anim_set_repeat_count(&marquee, 1);
-    lv_anim_set_completed_cb(&marquee, rest_truncated);
-    ready = true;
-  }
-  lv_obj_set_style_anim(label, &marquee, LV_PART_MAIN);
-  lv_obj_set_style_anim_duration(
-      label, lv_anim_speed_clamped(MARQUEE_PX_PER_S, 1000, 15000),
-      LV_PART_MAIN);
-}
-
-// A new text gets one pass of the marquee. The same text again (every Sonos
-// poll resends it) must leave the label alone, or the pass restarts before it
-// ever moves.
-static void set_marquee_text(lv_obj_t *label, char *shown, size_t shown_len,
-                             const char *text) {
-  if (strcmp(shown, text) == 0 &&
-      lv_label_get_long_mode(label) != LV_LABEL_LONG_WRAP)
-    return;
-  snprintf(shown, shown_len, "%s", text);
-  lv_obj_set_height(label, LV_SIZE_CONTENT);
-  lv_label_set_long_mode(label, LV_LABEL_LONG_SCROLL_CIRCULAR);
-  lv_label_set_text(label, text);
-}
-
 static void set_title(const char *text) {
-  static char shown[sizeof(MediaInfo::title)];
-  set_marquee_text(s_lbl_station, shown, sizeof(shown), text);
+  ui_marquee_text(s_lbl_station, text);
 }
 
 static void anim_fade(lv_obj_t *obj, lv_anim_exec_xcb_t exec_cb, int32_t start,
@@ -537,7 +391,7 @@ static void show_idle_ui(bool idle) {
   lv_anim_delete(s_lbl_station, anim_opa_cb);
   lv_anim_delete(s_route, anim_opa_cb);
   lv_anim_delete(s_lbl_subtitle, anim_opa_cb);
-  lv_anim_delete(s_bg_front, anim_bg_crossfade_cb);
+  backdrop_finish();
 
   faces_show(idle);
   sync_volume_ring(true);
@@ -569,7 +423,7 @@ static void show_idle_ui(bool idle) {
   lv_obj_set_style_opa(s_lbl_station, LV_OPA_TRANSP, LV_PART_MAIN);
   lv_obj_set_style_opa(s_route, LV_OPA_TRANSP, LV_PART_MAIN);
   lv_obj_set_style_opa(s_lbl_subtitle, LV_OPA_TRANSP, LV_PART_MAIN);
-  lv_obj_align(s_lbl_subtitle, LV_ALIGN_CENTER, 0, SUBTITLE_Y);
+  lv_obj_align(s_lbl_subtitle, LV_ALIGN_CENTER, 0, CAPTION_SUBTITLE_Y);
   anim_fade(s_lbl_station, anim_opa_cb, LV_OPA_TRANSP, LV_OPA_COVER,
             ANIM_FADE_MS);
   anim_fade(s_route, anim_opa_cb, LV_OPA_TRANSP, LV_OPA_COVER, ANIM_FADE_MS);
@@ -619,10 +473,11 @@ static void show_browse_item() {
 static CarouselTile browse_tile(int item) {
   int index = item + browse_base();
   if (index >= 0)
-    return {s_logos[index], lv_color_hex(STATIONS[index].color)};
+    return {s_logos[index], lv_color_hex(STATIONS[index].color), nullptr,
+            false};
   if (s_art_pixels)
-    return {&s_art_dsc, lv_color_hex(s_art_tint)};
-  return {nullptr, COL_ART_PLACEHOLDER};
+    return {&s_art_dsc, lv_color_hex(s_art_tint), nullptr, false};
+  return {nullptr, lv_color_hex(COL_PLACEHOLDER), ICON_MUSIC, false};
 }
 
 // The title follows the strip: it fades out as a tile leaves the middle and
@@ -675,7 +530,7 @@ static void enter_browse() {
   carousel_open(browse_total(), s_browse_index - browse_base(), browse_opened);
 
   show_browse_item();
-  lv_obj_set_style_text_opa(s_lbl_subtitle, TEXT_OPA_BROWSE, LV_PART_MAIN);
+  lv_obj_set_style_text_opa(s_lbl_subtitle, TEXT_OPA_SOFT, LV_PART_MAIN);
   lv_anim_delete(s_lbl_subtitle, anim_opa_cb);
   lv_obj_set_style_opa(s_lbl_subtitle, LV_OPA_TRANSP, LV_PART_MAIN);
   anim_fade(s_lbl_subtitle, anim_opa_cb, LV_OPA_TRANSP, LV_OPA_COVER,
@@ -805,11 +660,10 @@ static void on_external_idle_timeout(lv_timer_t *) {
 static void update_subtitle() {
   if (s_external_playing && s_media.artist[0] &&
       s_play_state == PlayState::Playing) {
-    static char shown[sizeof(MediaInfo::artist)];
     lv_obj_set_width(s_lbl_subtitle, LCD_H_RES - 100);
     lv_obj_set_style_text_align(s_lbl_subtitle, LV_TEXT_ALIGN_CENTER,
                                 LV_PART_MAIN);
-    set_marquee_text(s_lbl_subtitle, shown, sizeof(shown), s_media.artist);
+    ui_marquee_text(s_lbl_subtitle, s_media.artist);
     return;
   }
 
@@ -928,7 +782,7 @@ static RingLook ring_look() {
             s_vol_active};
   if (s_vol_active)
     return {COL_TEXT, LV_OPA_COVER, RING_TRACK_OPA_ACTIVE, RING_W_ACTIVE, true};
-  return {COL_TEXT, RING_LEVEL_OPA_REST, RING_TRACK_OPA, RING_W_REST, true};
+  return ring_rest_look(COL_TEXT);
 }
 
 static uint32_t ring_duration(const RingLook &from, const RingLook &to) {
@@ -1089,46 +943,19 @@ static void on_route_tap(lv_event_t *) {
 // Where the sound goes, as a glass pill like AirPlay's. It doubles as the
 // visible way into the speaker picker, which swipe up also opens.
 static void build_route_pill(lv_obj_t *parent) {
-  s_route_pill = ui_icon_pill(parent, ROUTE_H, &lucide_18, ICON_SPEAKER,
-                              ROUTE_ICON_NUDGE_Y, &sf_medium_15);
+  s_route_pill = ui_pill(parent, ICON_SPEAKER);
   s_route = s_route_pill.pill;
   s_route_label = s_route_pill.label;
-  lv_obj_align(s_route, LV_ALIGN_TOP_MID, 0, ROUTE_TOP);
-  lv_obj_set_style_bg_color(s_route, COL_TEXT, LV_PART_MAIN);
-  lv_obj_set_style_bg_opa(s_route, LV_OPA_10, LV_PART_MAIN);
-  lv_obj_set_style_bg_opa(
-      s_route, LV_OPA_20,
-      static_cast<lv_style_selector_t>(LV_PART_MAIN | LV_STATE_PRESSED));
+  lv_obj_align(s_route, LV_ALIGN_TOP_MID, 0, PILL_TOP);
   lv_obj_add_flag(s_route, LV_OBJ_FLAG_CLICKABLE);
   lv_obj_add_event_cb(s_route, on_route_tap, LV_EVENT_SHORT_CLICKED, nullptr);
-
-  lv_obj_set_style_text_color(s_route_pill.icon, COL_TEXT, LV_PART_MAIN);
-  lv_obj_set_style_text_opa(s_route_pill.icon, TEXT_OPA_BROWSE, LV_PART_MAIN);
-  lv_obj_set_style_text_color(s_route_label, COL_TEXT, LV_PART_MAIN);
-  lv_obj_set_style_text_opa(s_route_label, TEXT_OPA_BROWSE, LV_PART_MAIN);
-  lv_obj_set_style_max_width(s_route_label, ROUTE_TEXT_MAX_W, LV_PART_MAIN);
-  lv_label_set_long_mode(s_route_label, LV_LABEL_LONG_DOT);
   lv_obj_add_flag(s_route, LV_OBJ_FLAG_HIDDEN);
 }
 
 static void home_page_build(lv_obj_t *parent) {
   s_home = parent;
 
-  // ── Background layers (two solid colors for tear-free crossfade) ──
-  auto make_bg_layer = [&](lv_color_t color, lv_opa_t opa) {
-    lv_obj_t *obj = lv_obj_create(parent);
-    lv_obj_set_size(obj, LCD_H_RES, LCD_V_RES);
-    lv_obj_align(obj, LV_ALIGN_CENTER, 0, 0);
-    lv_obj_set_style_bg_color(obj, color, LV_PART_MAIN);
-    lv_obj_set_style_bg_opa(obj, opa, LV_PART_MAIN);
-    lv_obj_set_style_border_width(obj, 0, LV_PART_MAIN);
-    lv_obj_set_style_radius(obj, 0, LV_PART_MAIN);
-    lv_obj_remove_flag(obj, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_remove_flag(obj, LV_OBJ_FLAG_SCROLLABLE);
-    return obj;
-  };
-  s_bg_back = make_bg_layer(lv_color_hex(STATIONS[0].color), LV_OPA_COVER);
-  s_bg_front = make_bg_layer(lv_color_black(), LV_OPA_TRANSP);
+  backdrop_create(parent, lv_color_hex(STATIONS[0].color));
 
   volume_ring_create(parent, VOLUME_MIN, VOLUME_MAX, s_volume);
 
@@ -1136,7 +963,7 @@ static void home_page_build(lv_obj_t *parent) {
   // Only as big as the artwork: hiding it repaints just that.
   s_art_slot = ui_box(parent);
   lv_obj_set_size(s_art_slot, ART_SIZE, ART_SIZE);
-  lv_obj_align(s_art_slot, LV_ALIGN_CENTER, 0, ART_Y);
+  lv_obj_align(s_art_slot, LV_ALIGN_CENTER, 0, STAGE_TILE_Y);
   s_logo_container = lv_obj_create(s_art_slot);
   lv_obj_set_size(s_logo_container, 120, 120);
   lv_obj_set_style_bg_opa(s_logo_container, LV_OPA_TRANSP, LV_PART_MAIN);
@@ -1145,8 +972,9 @@ static void home_page_build(lv_obj_t *parent) {
   lv_obj_remove_flag(s_logo_container, LV_OBJ_FLAG_SCROLLABLE);
   lv_obj_remove_flag(s_logo_container, LV_OBJ_FLAG_CLICKABLE);
   lv_obj_center(s_logo_container);
-  static constexpr CarouselHooks BROWSE_HOOKS = {browse_tile, browse_moved};
-  carousel_create(parent, ART_Y, BROWSE_HOOKS);
+  static constexpr CarouselHooks BROWSE_HOOKS = {browse_tile, browse_moved,
+                                                 &lucide_48};
+  carousel_create(parent, STAGE_TILE_Y, BROWSE_HOOKS);
 
   // ── Prev/Next buttons — flanking album art, only shown in external mode ──
   auto make_media_btn = [&](bool is_next) -> lv_obj_t * {
@@ -1164,11 +992,11 @@ static void home_page_build(lv_obj_t *parent) {
     lv_obj_remove_flag(btn, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(btn, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_flag(btn, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_align(btn, LV_ALIGN_CENTER, is_next ? 110 : -110, ART_Y);
+    lv_obj_align(btn, LV_ALIGN_CENTER, is_next ? 110 : -110, STAGE_TILE_Y);
 
     lv_obj_t *lbl = lv_label_create(btn);
     lv_obj_set_style_text_color(lbl, COL_TEXT, LV_PART_MAIN);
-    lv_obj_set_style_text_opa(lbl, TEXT_OPA_BROWSE, LV_PART_MAIN);
+    lv_obj_set_style_text_opa(lbl, TEXT_OPA_SOFT, LV_PART_MAIN);
     lv_obj_set_style_text_font(lbl, &lucide_22, LV_PART_MAIN);
     lv_label_set_text(lbl, is_next ? ICON_SKIP_FORWARD : ICON_SKIP_BACK);
     lv_obj_center(lbl);
@@ -1188,8 +1016,8 @@ static void home_page_build(lv_obj_t *parent) {
   if (!s_placeholder_pixels)
     s_placeholder_pixels = squircle_alloc(ART_SIZE);
   if (s_placeholder_pixels) {
-    squircle_bake(nullptr, COL_ART_PLACEHOLDER, ART_SIZE, s_placeholder_pixels,
-                  &s_placeholder_dsc);
+    squircle_bake(nullptr, lv_color_hex(COL_PLACEHOLDER), ART_SIZE,
+                  s_placeholder_pixels, &s_placeholder_dsc);
     lv_image_set_src(s_art_placeholder, &s_placeholder_dsc);
   }
   lv_obj_remove_flag(s_art_placeholder, LV_OBJ_FLAG_CLICKABLE);
@@ -1227,36 +1055,13 @@ static void home_page_build(lv_obj_t *parent) {
   // its box makes it look shifted left; this puts the centroid near center.
   lv_obj_align(play_icon, LV_ALIGN_CENTER, 1, 0);
 
-  // ── Station name ──
-  s_lbl_station = lv_label_create(parent);
-  lv_obj_set_style_text_color(s_lbl_station, COL_TEXT, LV_PART_MAIN);
-  lv_obj_set_style_text_font(s_lbl_station, &sf_semibold_28, LV_PART_MAIN);
-  lv_obj_set_width(s_lbl_station, LCD_H_RES - 80);
-  lv_label_set_long_mode(s_lbl_station, LV_LABEL_LONG_SCROLL_CIRCULAR);
-  lv_obj_set_style_text_align(s_lbl_station, LV_TEXT_ALIGN_CENTER,
-                              LV_PART_MAIN);
+  // ── Station name, play state or "Tap to play", and the position while
+  // browsing ──
+  Caption caption = ui_caption(parent);
+  s_lbl_station = caption.title;
+  s_lbl_subtitle = caption.subtitle;
+  s_lbl_position = caption.detail;
   set_title(STATIONS[0].name);
-  lv_obj_align(s_lbl_station, LV_ALIGN_CENTER, 0, TITLE_Y);
-  scroll_once(s_lbl_station);
-
-  // ── Subtitle — play state or "Tap to play" in browse mode ──
-  // Secondary text is white at reduced opacity rather than a fixed gray, so
-  // it picks up the background tint like vibrancy on iOS.
-  s_lbl_subtitle = lv_label_create(parent);
-  lv_obj_set_style_text_color(s_lbl_subtitle, COL_TEXT, LV_PART_MAIN);
-  lv_obj_set_style_text_opa(s_lbl_subtitle, TEXT_OPA_SECONDARY, LV_PART_MAIN);
-  lv_obj_set_style_text_font(s_lbl_subtitle, &sf_regular_16, LV_PART_MAIN);
-  lv_label_set_text(s_lbl_subtitle, "");
-  scroll_once(s_lbl_subtitle);
-  lv_obj_align(s_lbl_subtitle, LV_ALIGN_CENTER, 0, SUBTITLE_Y);
-
-  // ── Position indicator (browse mode only) ──
-  s_lbl_position = lv_label_create(parent);
-  lv_obj_set_style_text_color(s_lbl_position, lv_color_hex(0x888888),
-                              LV_PART_MAIN);
-  lv_obj_set_style_text_font(s_lbl_position, &sf_regular_16, LV_PART_MAIN);
-  lv_label_set_text(s_lbl_position, "");
-  lv_obj_align(s_lbl_position, LV_ALIGN_CENTER, 0, POSITION_Y);
   lv_obj_add_flag(s_lbl_position, LV_OBJ_FLAG_HIDDEN);
 
   build_route_pill(parent);
@@ -1299,7 +1104,7 @@ static void build_main_screen() {
   s_wifi_dot = ui_box(s_screen);
   lv_obj_set_size(s_wifi_dot, 8, 8);
   lv_obj_set_style_radius(s_wifi_dot, LV_RADIUS_CIRCLE, LV_PART_MAIN);
-  lv_obj_set_style_bg_color(s_wifi_dot, COL_RED, LV_PART_MAIN);
+  lv_obj_set_style_bg_color(s_wifi_dot, lv_color_hex(COL_RED), LV_PART_MAIN);
   lv_obj_set_style_bg_opa(s_wifi_dot, LV_OPA_COVER, LV_PART_MAIN);
   lv_obj_align(s_wifi_dot, LV_ALIGN_TOP_MID, 0, 32);
   lv_obj_add_flag(s_wifi_dot, LV_OBJ_FLAG_HIDDEN);
@@ -1313,12 +1118,10 @@ static void close_picker() { sheet_close(s_speaker_sheet); }
 static void open_picker() { sheet_open(s_speaker_sheet); }
 
 // The menu leaves once nothing has touched or turned the knob for a while.
-// LVGL's own inactivity clock sees every touch, even on rows that take the
-// press themselves. Before any room is chosen it stays until one is.
+// Before any room is chosen it stays until one is.
 static void on_picker_idle_check(lv_timer_t *) {
-  if (picker_open() && s_current_speaker[0] &&
-      lv_display_get_inactive_time(nullptr) >= IDLE_MS)
-    close_picker();
+  if (s_current_speaker[0])
+    sheet_close_if_idle(s_speaker_sheet, IDLE_MS);
 }
 
 // Tap: control this room, on its own. The knob's own radio follows it to the
@@ -1358,15 +1161,15 @@ static void style_group_ring(lv_obj_t *card, bool grouped) {
 
 static lv_obj_t *make_group_circle(lv_obj_t *card) {
   lv_obj_t *circle = lv_obj_create(card);
-  lv_obj_set_size(circle, ROW_CIRCLE, ROW_CIRCLE);
+  lv_obj_set_size(circle, LIST_ROW_CIRCLE, LIST_ROW_CIRCLE);
   lv_obj_set_style_radius(circle, LV_RADIUS_CIRCLE, LV_PART_MAIN);
   lv_obj_set_style_bg_color(circle, COL_TEXT, LV_PART_MAIN);
   lv_obj_set_style_border_color(circle, COL_TEXT, LV_PART_MAIN);
-  lv_obj_set_style_border_opa(circle, ROW_RING_OPA, LV_PART_MAIN);
+  lv_obj_set_style_border_opa(circle, LIST_RING_OPA, LV_PART_MAIN);
   lv_obj_set_style_pad_all(circle, 0, LV_PART_MAIN);
   lv_obj_remove_flag(circle, LV_OBJ_FLAG_SCROLLABLE);
   lv_obj_remove_flag(circle, LV_OBJ_FLAG_CLICKABLE);
-  lv_obj_align(circle, LV_ALIGN_RIGHT_MID, -ROW_INSET, 0);
+  lv_obj_align(circle, LV_ALIGN_RIGHT_MID, -LIST_ROW_INSET, 0);
 
   lv_obj_t *check = lv_label_create(circle);
   lv_obj_set_style_text_font(check, &lucide_22, LV_PART_MAIN);
@@ -1429,29 +1232,8 @@ static void on_speaker_tap(lv_event_t *e) {
   select_speaker(index);
 }
 
-static int s_picker_prev_highlight = -1;
-
-// Focus lifts the row instead of outlining it: one fill change, no border.
-static void style_picker_item(lv_obj_t *child, bool active) {
-  lv_obj_set_style_bg_opa(child, active ? ROW_FOCUS_OPA : ROW_OPA,
-                          LV_PART_MAIN);
-}
-
-// Restyle only the two rows a detent touches, not the whole list.
 static void highlight_picker_item(int highlight) {
-  if (!s_picker_list)
-    return;
-  int count = lv_obj_get_child_count(s_picker_list);
-  if (s_picker_prev_highlight >= 0 && s_picker_prev_highlight < count &&
-      s_picker_prev_highlight != highlight)
-    style_picker_item(lv_obj_get_child(s_picker_list, s_picker_prev_highlight),
-                      false);
-  if (highlight >= 0 && highlight < count) {
-    lv_obj_t *child = lv_obj_get_child(s_picker_list, highlight);
-    style_picker_item(child, true);
-    lv_obj_scroll_to_view(child, LV_ANIM_ON);
-  }
-  s_picker_prev_highlight = highlight;
+  ui_list_focus(s_picker_list, highlight);
 }
 
 static void on_picker_dismiss(lv_event_t *) { close_picker(); }
@@ -1473,79 +1255,18 @@ static void on_next_tap(lv_event_t *) {
 static void reset_picker_content() {
   lv_obj_clean(s_speaker_content);
   s_picker_list = nullptr;
-  s_picker_spinner = nullptr;
 }
 
 static void build_picker_scanning() {
   reset_picker_content();
 
   lv_obj_t *title = lv_label_create(s_speaker_content);
-  lv_obj_set_style_text_color(title, COL_TEXT_SEC, LV_PART_MAIN);
+  lv_obj_set_style_text_color(title, lv_color_hex(COL_GRAY), LV_PART_MAIN);
   lv_obj_set_style_text_font(title, &sf_regular_22, LV_PART_MAIN);
   lv_label_set_text(title, "Speakers");
   lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 54);
 
-  s_picker_spinner = activity_create(s_speaker_content);
-  lv_obj_align(s_picker_spinner, LV_ALIGN_CENTER, 0, -16);
-
-  lv_obj_t *scan_lbl = lv_label_create(s_speaker_content);
-  lv_obj_set_style_text_color(scan_lbl, COL_TEXT_SEC, LV_PART_MAIN);
-  lv_obj_set_style_text_font(scan_lbl, &sf_regular_16, LV_PART_MAIN);
-  lv_label_set_text(scan_lbl, "Scanning for speakers\u2026");
-  lv_obj_align(scan_lbl, LV_ALIGN_CENTER, 0, 24);
-}
-
-// The list fades out at an edge where rows carry on past it, instead of
-// cutting them off, like iOS's scroll edge effect. Nothing about it switches
-// abruptly:
-// - the fade is deep, most of a row, and eased (smoothstep), so it has no
-//   visible start or end;
-// - an edge's fade grows with how far the rows have scrolled under it, so it
-//   comes in as the list moves instead of popping on after one pixel.
-// It is the sheet's material painted back over the rows, in thin strips of
-// rising opacity. Masking the list instead would draw it through a layer, too
-// slow for a sheet that slides.
-static constexpr int PICKER_LIST_W = 260;
-static constexpr int PICKER_LIST_H = 170;
-static constexpr int LIST_FADE_H = 44;
-static constexpr int LIST_FADE_STEP = 2;
-static constexpr int32_t FADE_FULL = 256;
-
-// How much of the content shows at `from_edge` px inside an edge at full fade.
-static int32_t fade_alpha(int from_edge) {
-  if (from_edge >= LIST_FADE_H)
-    return LV_OPA_COVER;
-  int32_t t = from_edge * FADE_FULL / LIST_FADE_H;
-  return t * t * (3 * FADE_FULL - 2 * t) / (FADE_FULL * FADE_FULL) *
-         LV_OPA_COVER / FADE_FULL;
-}
-
-// 0..FADE_FULL: how strongly an edge with `hidden` px of rows beyond it fades.
-static int32_t edge_strength(int32_t hidden) {
-  return std::clamp<int32_t>(hidden, 0, LIST_FADE_H) * FADE_FULL / LIST_FADE_H;
-}
-
-// Veils `from_edge` px of the list in from an edge, `strength` deep.
-static void veil_list_edge(lv_layer_t *layer, const lv_area_t &list,
-                           int32_t strength, bool top) {
-  for (int y = 0; strength > 0 && y < LIST_FADE_H; y += LIST_FADE_STEP) {
-    int32_t hidden = LV_OPA_COVER - fade_alpha(y + LIST_FADE_STEP / 2);
-    auto veil = static_cast<lv_opa_t>(strength * hidden / FADE_FULL);
-    lv_area_t strip = list;
-    strip.y1 = top ? list.y1 + y : list.y2 - y - LIST_FADE_STEP + 1;
-    strip.y2 = strip.y1 + LIST_FADE_STEP - 1;
-    sheet_draw_material(s_speaker_sheet, layer, &strip, veil);
-  }
-}
-
-static void on_list_drawn(lv_event_t *e) {
-  lv_obj_t *list = lv_event_get_current_target_obj(e);
-  lv_area_t area;
-  lv_obj_get_coords(list, &area);
-  lv_layer_t *layer = lv_event_get_layer(e);
-  veil_list_edge(layer, area, edge_strength(lv_obj_get_scroll_top(list)), true);
-  veil_list_edge(layer, area, edge_strength(lv_obj_get_scroll_bottom(list)),
-                 false);
+  ui_activity_message(s_speaker_content, "Scanning for speakers\u2026");
 }
 
 // The scan is the freshest view of who's grouped (e.g. via the Sonos app).
@@ -1558,80 +1279,29 @@ static void adopt_scanned_group() {
 static void rebuild_speaker_list() {
   reset_picker_content();
 
-  lv_obj_t *title = lv_label_create(s_speaker_content);
-  lv_obj_set_style_text_color(title, COL_TEXT, LV_PART_MAIN);
-  lv_obj_set_style_text_font(title, &sf_regular_22, LV_PART_MAIN);
-  lv_label_set_text(title, "Speakers");
-  lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 46);
-
-  lv_obj_t *hint = lv_label_create(s_speaker_content);
-  lv_obj_set_style_text_color(hint, COL_TEXT, LV_PART_MAIN);
-  lv_obj_set_style_text_opa(hint, TEXT_OPA_TERTIARY, LV_PART_MAIN);
-  lv_obj_set_style_text_font(hint, &sf_regular_16, LV_PART_MAIN);
-  lv_label_set_text(hint, "Tap to switch, hold to group");
-  lv_obj_align(hint, LV_ALIGN_TOP_MID, 0, 72);
+  ui_list_title(s_speaker_content, "Speakers", "Tap to switch, hold to group");
 
   adopt_scanned_group();
 
   if (s_discovered.count > 0) {
-    s_picker_list = lv_obj_create(s_speaker_content);
-    lv_obj_set_size(s_picker_list, PICKER_LIST_W, PICKER_LIST_H);
-    lv_obj_align(s_picker_list, LV_ALIGN_CENTER, 0, 6);
-    lv_obj_set_style_bg_opa(s_picker_list, LV_OPA_TRANSP, LV_PART_MAIN);
-    lv_obj_set_style_border_width(s_picker_list, 0, LV_PART_MAIN);
-    lv_obj_set_style_pad_all(s_picker_list, 0, LV_PART_MAIN);
-    lv_obj_set_style_pad_row(s_picker_list, 8, LV_PART_MAIN);
-    lv_obj_set_flex_flow(s_picker_list, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_flex_align(s_picker_list, LV_FLEX_ALIGN_START,
-                          LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_set_scrollbar_mode(s_picker_list, LV_SCROLLBAR_MODE_OFF);
-    // Rows scroll it from their own presses; the gaps between them must
-    // reach the screen, or a swipe down to dismiss dies there.
-    lv_obj_remove_flag(s_picker_list, LV_OBJ_FLAG_CLICKABLE);
+    s_picker_list = ui_list_create(s_speaker_content, s_speaker_sheet);
 
     for (int i = 0; i < s_discovered.count; i++) {
       auto &spk = s_discovered.speakers[i];
-      bool is_current =
-          (s_current_speaker[0] && strcmp(spk.name, s_current_speaker) == 0);
-      bool has_dot = is_current;
+      lv_obj_t *card = ui_list_row(s_picker_list, spk.name);
 
-      lv_obj_t *card = lv_obj_create(s_picker_list);
-      lv_obj_set_size(card, ROW_W, ROW_H);
-      lv_obj_set_style_bg_color(card, COL_TEXT, LV_PART_MAIN);
-      lv_obj_set_style_bg_opa(card, ROW_OPA, LV_PART_MAIN);
-      lv_obj_set_style_border_width(card, 0, LV_PART_MAIN);
-      lv_obj_set_style_radius(card, ROW_H / 2, LV_PART_MAIN);
-      // The theme's card padding would push the circle off its concentric
-      // spot; every inset below is measured from the row's real edge.
-      lv_obj_set_style_pad_all(card, 0, LV_PART_MAIN);
-      lv_obj_remove_flag(card, LV_OBJ_FLAG_SCROLLABLE);
-      lv_obj_add_flag(card, LV_OBJ_FLAG_CLICKABLE);
-      lv_obj_set_style_bg_opa(
-          card, ROW_PRESSED_OPA,
-          static_cast<lv_style_selector_t>(LV_PART_MAIN | LV_STATE_PRESSED));
-
-      if (has_dot) {
+      // The controlled room's dot sits centered in the leading slot.
+      if (s_current_speaker[0] && strcmp(spk.name, s_current_speaker) == 0) {
         lv_obj_t *dot = lv_obj_create(card);
         lv_obj_set_size(dot, 6, 6);
         lv_obj_set_style_radius(dot, LV_RADIUS_CIRCLE, LV_PART_MAIN);
-        lv_obj_set_style_bg_color(dot, COL_GREEN, LV_PART_MAIN);
+        lv_obj_set_style_bg_color(dot, lv_color_hex(COL_GREEN), LV_PART_MAIN);
         lv_obj_set_style_bg_opa(dot, LV_OPA_COVER, LV_PART_MAIN);
         lv_obj_set_style_border_width(dot, 0, LV_PART_MAIN);
-        lv_obj_align(dot, LV_ALIGN_LEFT_MID, ROW_INSET + ROW_CIRCLE / 2 - 3, 0);
+        lv_obj_align(dot, LV_ALIGN_LEFT_MID,
+                     LIST_ROW_INSET + LIST_ROW_CIRCLE / 2 - 3, 0);
         lv_obj_remove_flag(dot, LV_OBJ_FLAG_CLICKABLE);
       }
-
-      lv_obj_t *lbl = lv_label_create(card);
-      lv_obj_set_style_text_color(lbl, COL_TEXT, LV_PART_MAIN);
-      lv_obj_set_style_text_font(lbl, &sf_regular_18, LV_PART_MAIN);
-      lv_label_set_text(lbl, spk.name);
-      // Fixed size + DOT: long names must ellipsize on one line, or the
-      // label wraps and bursts out of the 50px card.
-      // Names share one left edge whether or not the row has the dot; the
-      // dot sits centered in a leading slot mirroring the check circle.
-      lv_label_set_long_mode(lbl, LV_LABEL_LONG_DOT);
-      lv_obj_set_size(lbl, ROW_W - 2 * ROW_TEXT_X, 22);
-      lv_obj_align(lbl, LV_ALIGN_LEFT_MID, ROW_TEXT_X, 0);
 
       make_group_circle(card);
       style_group_ring(card, sonos_group_has(s_group, spk.uuid));
@@ -1642,71 +1312,20 @@ static void rebuild_speaker_list() {
                           reinterpret_cast<void *>(static_cast<intptr_t>(i)));
     }
 
-    s_picker_prev_highlight = -1; // fresh list — stale index would misstyle
     highlight_picker_item(0);
-    lv_obj_add_event_cb(s_picker_list, on_list_drawn, LV_EVENT_DRAW_POST,
-                        nullptr);
-    lv_obj_add_event_cb(s_picker_list, sheets_scroll_with_finger,
-                        LV_EVENT_SCROLL_BEGIN, nullptr);
   } else {
     s_picker_list = nullptr;
     lv_obj_t *empty = lv_label_create(s_speaker_content);
-    lv_obj_set_style_text_color(empty, COL_TEXT_SEC, LV_PART_MAIN);
+    lv_obj_set_style_text_color(empty, lv_color_hex(COL_GRAY), LV_PART_MAIN);
     lv_obj_set_style_text_font(empty, &sf_regular_16, LV_PART_MAIN);
     lv_label_set_text(empty, "No speakers found.\nCheck your network.");
     lv_obj_set_style_text_align(empty, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
     lv_obj_align(empty, LV_ALIGN_CENTER, 0, 0);
   }
 
-  // Dismiss / Back button
-  // Pads are set against the visible ink, not the glyph boxes: Lucide draws
-  // arrow-left and x 4 px inside their 22 px box, SF 16 leaves about 1 px on
-  // either side of "Back". Ink margins equal the capsule radius, with
-  // the pointed icon 1 px closer since a tip reads lighter than a stem.
-  constexpr int BACK_H = 40;
-  constexpr int ICON_BEARING = 4;
-  constexpr int TEXT_LEAD = 1;
-  constexpr int TEXT_TRAIL = 1;
-  constexpr int ICON_GAP = 6;
-  constexpr int BACK_HIT_W = 180;
-  constexpr int BACK_HIT_H = 85; // stops just short of the list's last row
-  lv_obj_t *back_btn = lv_obj_create(s_speaker_content);
-  lv_obj_set_size(back_btn, LV_SIZE_CONTENT, BACK_H);
-  lv_obj_align(back_btn, LV_ALIGN_BOTTOM_MID, 0, -37);
-  lv_obj_set_style_bg_color(back_btn, COL_TEXT, LV_PART_MAIN);
-  lv_obj_set_style_bg_opa(back_btn, BACK_OPA, LV_PART_MAIN);
-  lv_obj_set_style_border_width(back_btn, 0, LV_PART_MAIN);
-  lv_obj_set_style_radius(back_btn, BACK_H / 2, LV_PART_MAIN);
-  lv_obj_set_style_pad_ver(back_btn, 0, LV_PART_MAIN);
-  lv_obj_set_style_pad_left(back_btn, BACK_H / 2 - 1 - ICON_BEARING,
-                            LV_PART_MAIN);
-  lv_obj_set_style_pad_right(back_btn, BACK_H / 2 - TEXT_TRAIL, LV_PART_MAIN);
-  lv_obj_remove_flag(back_btn, LV_OBJ_FLAG_SCROLLABLE);
-  lv_obj_set_style_bg_opa(
-      back_btn, BACK_PRESSED_OPA,
-      static_cast<lv_style_selector_t>(LV_PART_MAIN | LV_STATE_PRESSED));
-  lv_obj_set_flex_flow(back_btn, LV_FLEX_FLOW_ROW);
-  lv_obj_set_flex_align(back_btn, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER,
-                        LV_FLEX_ALIGN_CENTER);
-  lv_obj_set_style_pad_column(back_btn, ICON_GAP - ICON_BEARING - TEXT_LEAD,
-                              LV_PART_MAIN);
-
-  lv_obj_t *back_icon = lv_label_create(back_btn);
-  lv_obj_set_style_text_color(back_icon, COL_TEXT, LV_PART_MAIN);
-  lv_obj_set_style_text_font(back_icon, &lucide_22, LV_PART_MAIN);
-  lv_label_set_text(back_icon, s_current_speaker[0] ? ICON_ARROW_LEFT : ICON_X);
-
-  lv_obj_t *back_lbl = lv_label_create(back_btn);
-  lv_obj_set_style_text_color(back_lbl, COL_TEXT, LV_PART_MAIN);
-  lv_obj_set_style_text_font(back_lbl, &sf_regular_16, LV_PART_MAIN);
-  lv_label_set_text(back_lbl, s_current_speaker[0] ? "Back" : "Dismiss");
-
-  // The capsule is a small target down by the bezel; take everything below
-  // the list instead.
-  lv_obj_t *back_hit =
-      ui_hit_area(s_speaker_content, back_btn, on_picker_dismiss);
-  lv_obj_set_size(back_hit, BACK_HIT_W, BACK_HIT_H);
-  lv_obj_align(back_hit, LV_ALIGN_BOTTOM_MID, 0, 0);
+  ui_list_back(s_speaker_content,
+               s_current_speaker[0] ? ICON_ARROW_LEFT : ICON_X,
+               s_current_speaker[0] ? "Back" : "Dismiss", on_picker_dismiss);
   s_speaker_list_stale = false;
 }
 
@@ -1721,12 +1340,7 @@ static bool speakers_may_open() {
 
 // A drag down over the list scrolls it, unless it's already at the top.
 static bool speakers_may_close_from(lv_point_t start) {
-  if (!s_picker_list || lv_obj_get_scroll_y(s_picker_list) <= 0)
-    return true;
-  lv_area_t a;
-  lv_obj_get_coords(s_picker_list, &a);
-  return !(start.x >= a.x1 && start.x <= a.x2 && start.y >= a.y1 &&
-           start.y <= a.y2);
+  return ui_list_may_close_from(s_picker_list, start);
 }
 
 static void speakers_appear() {
@@ -1757,10 +1371,7 @@ static void build_speaker_sheet() {
       .on_closed = nullptr,
   };
   s_speaker_sheet = sheet_create(s_screen, SheetEdge::Bottom, POLICY);
-  s_speaker_content = ui_box(s_speaker_sheet);
-  lv_obj_set_size(s_speaker_content, LCD_H_RES, LCD_V_RES);
-  // Not drawn; the activity spinner shades its spokes against it.
-  lv_obj_set_style_bg_color(s_speaker_content, COL_BG, LV_PART_MAIN);
+  s_speaker_content = sheet_add_content(s_speaker_sheet);
 }
 
 // ─── Timer sheet

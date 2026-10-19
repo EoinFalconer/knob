@@ -585,8 +585,8 @@ bool sanity_api_fetch_people() {
   snprintf(query, sizeof(query),
            "*[_type==\"person\"&&active==true&&location match \"%s\"]"
            "{_id,name,\"image\":photo.asset->url + "
-           "\"?w=96&h=96&fit=crop&fm=jpg\"}",
-           office);
+           "\"?w=%d&h=%d&fit=crop&fm=jpg\"}",
+           office, KAFFI_PHOTO_PX, KAFFI_PHOTO_PX);
   url_encode(query, enc, sizeof(enc));
   snprintf(url, sizeof(url),
            "https://%s.api.sanity.io/v%s/data/query/%s?query=%s",
@@ -788,7 +788,7 @@ bool sanity_api_fetch_avatar(const char *url, unsigned char **out_pixels,
 
   bool ok = false;
   if (err == ESP_OK && status == 200 && resp.len > 0) {
-    ok = art_decode_jpeg(jbuf, resp.len, out_pixels, w, h, 96);
+    ok = art_decode_jpeg(jbuf, resp.len, out_pixels, w, h, KAFFI_PHOTO_PX);
   } else {
     ESP_LOGW(TAG, "Avatar fetch failed (err=%d status=%d len=%d)", err, status,
              resp.len);

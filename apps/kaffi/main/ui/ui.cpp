@@ -1,947 +1,592 @@
 #include "ui/ui.h"
+#include "activity.h"
 #include "app_config.h"
-#include "art_decoder.h"
+#include "backdrop.h"
+#include "caption.h"
+#include "carousel.h"
 #include "display.h"
 #include "encoder.h"
+#include "fonts.h"
+#include "hal_pins.h"
 #include "haptic.h"
+#include "primitives.h"
+#include "sheet.h"
+#include "sheet_list.h"
+#include "theme.h"
+#include "ui/avatars.h"
+#include "ui/standing.h"
+#include "volume_ring.h"
 
+#include "esp_attr.h"
 #include "esp_event.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
-#include "esp_timer.h"
 
+#ifdef ESP_PLATFORM
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
+#endif
 
 #include "lvgl.h"
 
-#include <cctype>
+#include <algorithm>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
-#include <ctime>
-
-static constexpr const char *TAG = "ui";
 
 ESP_EVENT_DECLARE_BASE(APP_EVENT);
 
-// Defined in main.cpp — enqueues an avatar fetch directly onto the worker queue
-// (bypassing the small esp_event loop queue).
-void kaffi_request_avatar(const char *url);
+// ─── How the knob works
+//
+//  People         turn → the next person glides in (wraps)
+//                 tap or swipe up → the log sheet, for them
+//                 hold or swipe down → the leaderboard sheet
+//                 swipe sideways → one person over
+//  Log sheet      turn → focus a row; tap a row → log it and close
+//  Leaderboard    turn → move through it
+//  A sheet nobody touches closes by itself.
+//
+// The people screen is the radio's browse view, with people for stations:
+// the same tile strip, title, subtitle and position line, the same ring round
+// the bezel, and the same pill at the top.
 
-// ─── Coffee theme (lv_color_t field order is blue, green, red)
-static constexpr lv_color_t COL_BG = {.blue = 0x0B, .green = 0x12, .red = 0x1A};
-static constexpr lv_color_t COL_TEXT = {
-    .blue = 0xE6, .green = 0xEF, .red = 0xF5};
-static constexpr lv_color_t COL_CREAM = {
-    .blue = 0xB0, .green = 0xD8, .red = 0xE8};
-static constexpr lv_color_t COL_SUB = {
-    .blue = 0x88, .green = 0xA0, .red = 0xB0};
-static constexpr lv_color_t COL_BREW = {
-    .blue = 0x37, .green = 0x4E, .red = 0x6F};
-static constexpr lv_color_t COL_CUP = {
-    .blue = 0x3A, .green = 0x8A, .red = 0xC8};
-static constexpr lv_color_t COL_BACK = {
-    .blue = 0x20, .green = 0x2C, .red = 0x3A};
-static constexpr lv_color_t COL_GOOD = {
-    .blue = 0x73, .green = 0xBF, .red = 0x6F};
-static constexpr lv_color_t COL_BAD = {
-    .blue = 0x4B, .green = 0x55, .red = 0xD9};
-static constexpr lv_color_t COL_GOLD = {
-    .blue = 0x58, .green = 0xC5, .red = 0xE8};
-static constexpr lv_color_t COL_SILVER = {
-    .blue = 0xD0, .green = 0xC8, .red = 0xC0};
-static constexpr lv_color_t COL_BRONZE = {
-    .blue = 0x5A, .green = 0x8A, .red = 0xC8};
-static constexpr lv_color_t COL_FLAME = { // streak orange (#F07830)
-    .blue = 0x30,
-    .green = 0x78,
-    .red = 0xF0};
+namespace {
 
-LV_IMAGE_DECLARE(img_flame); // 16px A8 Lucide flame, tinted at draw time
+constexpr const char *TAG = "ui";
 
-enum class Mode { Status, List, Action, Pots, Leaderboard };
+constexpr int32_t RING_MAX = 1000;
+// The screen takes a tile's color once the strip has rested on it this long:
+// a fade on every detent of a spin would repaint the whole screen each time.
+constexpr uint32_t TINT_SETTLE_MS = 300;
+constexpr uint32_t IDLE_CHECK_MS = 1000;
 
-// True on Mon-Fri with a synced clock — the only days a streak can die.
-static bool is_weekday_today() {
-  time_t now = time(nullptr);
-  struct tm lt;
-  localtime_r(&now, &lt);
-  if (lt.tm_year + 1900 < 2023)
-    return false;
-  return lt.tm_wday >= 1 && lt.tm_wday <= 5;
+// The podium's medals, after Apple's yellow, silver and a bronze to match.
+constexpr uint32_t COL_SILVER = 0xC7C7CC;
+constexpr uint32_t COL_BRONZE = 0xAC8E68;
+
+enum class Mode { Status, Office, People };
+
+EXT_RAM_BSS_ATTR KaffiState s_state;
+int s_sel;   // where the strip is headed: who a tap logs for
+int s_shown; // the tile nearest the middle: whose name shows
+Mode s_mode = Mode::Status;
+bool s_offline;
+int s_pending;
+char s_toast[32];
+lv_timer_t *s_toast_timer;
+int s_enc_halfsteps;
+bool s_swiped; // this touch already moved the strip
+lv_timer_t *s_tint_timer;
+
+lv_obj_t *s_screen;
+Caption s_caption;
+IconPill s_pill;
+lv_obj_t *s_status;
+lv_obj_t *s_status_label;
+
+lv_obj_t *s_log_sheet;
+lv_obj_t *s_log_content;
+lv_obj_t *s_log_list;
+lv_obj_t *s_board_sheet;
+lv_obj_t *s_board_content;
+lv_obj_t *s_board_list;
+int s_focus;
+
+void (*s_office_picked)(int);
+
+int balance_of(const Person &p) { return p.credit - p.cups; }
+
+bool have_people() { return s_mode == Mode::People && s_state.count > 0; }
+
+const Person *person(int index) {
+  return index >= 0 && index < s_state.count ? &s_state.people[index] : nullptr;
 }
 
-static int balance_of(const Person *p) { return p->credit - p->cups; }
-
-// ─── State
-static KaffiState s_state = {};
-static int s_sel = 0;
-static Mode s_mode = Mode::Status;
-
-// Avatar cache — one decoded RGB565 buffer per person, kept in PSRAM so
-// switching people is instant. Filled by a background preload after each
-// people refresh.
-enum class AvState : uint8_t { Empty, Requested, Loaded };
-struct AvatarSlot {
-  uint8_t *pixels;       // full 96px photo (home screen)
-  uint8_t *thumb_pixels; // pre-scaled thumb (lists) — see art_scale_rgb565()
-  lv_image_dsc_t dsc;
-  lv_image_dsc_t thumb_dsc;
-  AvState state;
-  char url[KAFFI_URL_LEN];
-};
-static constexpr int THUMB_SIZE = 40;
-static AvatarSlot s_av[KAFFI_MAX_PEOPLE] = {};
-
-// Leaderboard
-static int64_t s_lb_last_activity = 0;
-static int s_lb_highlight = 0;
-
-// ─── Objects
-static lv_obj_t *s_screen = nullptr;
-static lv_obj_t *s_status_view = nullptr;
-static lv_obj_t *s_status_lbl = nullptr;
-static lv_obj_t *s_list_view = nullptr;
-static lv_obj_t *s_list_arc = nullptr; // rim arc showing list position
-static lv_obj_t *s_avatar_box = nullptr;
-static lv_obj_t *s_avatar_img = nullptr;
-static lv_obj_t *s_avatar_init = nullptr;
-static lv_obj_t *s_streak_badge = nullptr; // flame "DAY N" pill on the avatar
-static lv_obj_t *s_streak_flame = nullptr;
-static lv_obj_t *s_streak_lbl = nullptr;
-static lv_obj_t *s_list_name = nullptr;
-static lv_obj_t *s_list_stats = nullptr;
-static lv_obj_t *s_list_balance = nullptr;
-static lv_obj_t *s_list_index = nullptr;
-static lv_obj_t *s_action_view = nullptr;
-static lv_obj_t *s_action_name = nullptr;
-static lv_obj_t *s_action_avatar = nullptr; // who you're logging for
-static lv_obj_t *s_action_init = nullptr;
-static lv_obj_t *s_pots_view = nullptr;
-static lv_obj_t *s_lb_view = nullptr;
-static lv_obj_t *s_lb_list = nullptr;
-static lv_obj_t *s_toast = nullptr;
-static lv_obj_t *s_net_pill = nullptr; // "OFFLINE" / "N PENDING" on the list
-static lv_obj_t *s_net_lbl = nullptr;
-static lv_timer_t *s_toast_timer = nullptr;
-
-// ─── Helpers
-
-static void anim_opa_cb(void *obj, int32_t v) {
-  lv_obj_set_style_opa(static_cast<lv_obj_t *>(obj), static_cast<lv_opa_t>(v),
-                       0);
+lv_obj_t *open_sheet() {
+  if (s_log_sheet && sheet_is_visible(s_log_sheet))
+    return s_log_sheet;
+  if (s_board_sheet && sheet_is_visible(s_board_sheet))
+    return s_board_sheet;
+  return nullptr;
 }
 
-static void anim_ty_cb(void *obj, int32_t v) {
-  lv_obj_set_style_translate_y(static_cast<lv_obj_t *>(obj), v, 0);
+lv_obj_t *label(lv_obj_t *parent, const lv_font_t *font, int y) {
+  lv_obj_t *l = lv_label_create(parent);
+  lv_obj_set_style_text_color(l, lv_color_white(), LV_PART_MAIN);
+  lv_obj_set_style_text_font(l, font, LV_PART_MAIN);
+  lv_obj_set_style_text_align(l, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
+  lv_label_set_text(l, "");
+  lv_obj_align(l, LV_ALIGN_CENTER, 0, y);
+  return l;
 }
 
-// Springy nudge on the avatar when the selection moves — pure translation, so
-// no per-pixel transform work.
-static void avatar_nudge(int dir) {
-  lv_anim_delete(s_avatar_box, anim_ty_cb);
-  lv_anim_t a;
-  lv_anim_init(&a);
-  lv_anim_set_var(&a, s_avatar_box);
-  lv_anim_set_values(&a, dir > 0 ? 8 : -8, 0);
-  lv_anim_set_duration(&a, 220);
-  lv_anim_set_exec_cb(&a, anim_ty_cb);
-  lv_anim_set_path_cb(&a, lv_anim_path_overshoot);
-  lv_anim_start(&a);
+// ─── The pill at the top: a toast just after logging, else the network's
+// state, else the person's streak.
+
+// The usual white veil, or filled with the color for a streak that needs
+// saving today.
+void style_pill(const char *icon, uint32_t color, lv_opa_t opa,
+                bool filled = false) {
+  ui_icon_pill_set_icon(s_pill, icon, 0);
+  ui_pill_tint(s_pill, filled ? lv_color_black() : lv_color_hex(color), opa);
+  lv_obj_set_style_bg_color(s_pill.pill,
+                            filled ? lv_color_hex(color) : lv_color_white(),
+                            LV_PART_MAIN);
+  lv_obj_set_style_bg_opa(s_pill.pill, filled ? LV_OPA_COVER : PILL_OPA,
+                          LV_PART_MAIN);
 }
 
-// Quick fade-in for a view when it becomes visible.
-static void fade_in(lv_obj_t *o) {
-  lv_anim_delete(o, anim_opa_cb);
-  lv_obj_set_style_opa(o, LV_OPA_TRANSP, 0);
-  lv_anim_t a;
-  lv_anim_init(&a);
-  lv_anim_set_var(&a, o);
-  lv_anim_set_values(&a, LV_OPA_TRANSP, LV_OPA_COVER);
-  lv_anim_set_duration(&a, 150);
-  lv_anim_set_exec_cb(&a, anim_opa_cb);
-  lv_anim_set_path_cb(&a, lv_anim_path_ease_out);
-  lv_anim_start(&a);
+// Whether the pill follows the strip, fading with the name.
+bool pill_is_streak() {
+  return s_mode == Mode::People && !s_toast[0] && !s_offline && s_pending <= 0;
 }
 
-static void set_mode(Mode m) {
-  s_mode = m;
-  lv_obj_add_flag(s_status_view, LV_OBJ_FLAG_HIDDEN);
-  lv_obj_add_flag(s_list_view, LV_OBJ_FLAG_HIDDEN);
-  lv_obj_add_flag(s_action_view, LV_OBJ_FLAG_HIDDEN);
-  lv_obj_add_flag(s_pots_view, LV_OBJ_FLAG_HIDDEN);
-  lv_obj_add_flag(s_lb_view, LV_OBJ_FLAG_HIDDEN);
-
-  lv_obj_t *show = nullptr;
-  switch (m) {
-  case Mode::Status:
-    show = s_status_view;
-    break;
-  case Mode::List:
-    show = s_list_view;
-    break;
-  case Mode::Action:
-    show = s_action_view;
-    break;
-  case Mode::Pots:
-    show = s_pots_view;
-    break;
-  case Mode::Leaderboard:
-    show = s_lb_view;
-    break;
+void update_pill() {
+  char text[40] = "";
+  if (s_mode == Mode::Office) {
+    style_pill(ICON_COFFEE, 0xFFFFFF, TEXT_OPA_SOFT);
+    snprintf(text, sizeof(text), "Which office?");
+  } else if (s_toast[0]) {
+    style_pill(ICON_CHECK, COL_GREEN, LV_OPA_COVER);
+    snprintf(text, sizeof(text), "%s", s_toast);
+  } else if (s_offline) {
+    style_pill(ICON_WIFI_OFF, COL_RED, LV_OPA_COVER);
+    if (s_pending > 0)
+      snprintf(text, sizeof(text), "Offline, %d waiting", s_pending);
+    else
+      snprintf(text, sizeof(text), "Offline");
+  } else if (s_pending > 0) {
+    style_pill(ICON_UPLOAD, 0xFFFFFF, TEXT_OPA_SOFT);
+    snprintf(text, sizeof(text), "%d waiting", s_pending);
+  } else if (const Person *p = person(s_shown)) {
+    Streak streak = streak_of(*p, is_weekday_today());
+    if (streak.at_risk)
+      style_pill(ICON_FLAME, COL_ORANGE, LV_OPA_COVER, true);
+    else
+      style_pill(ICON_FLAME, COL_ORANGE, LV_OPA_COVER);
+    streak_text(streak, text, sizeof(text));
   }
-  if (show) {
-    lv_obj_clear_flag(show, LV_OBJ_FLAG_HIDDEN);
-    fade_in(show);
-  }
+  ui_icon_pill_set_text(s_pill, text);
+  lv_obj_set_flag(s_pill.pill, LV_OBJ_FLAG_HIDDEN,
+                  !text[0] || s_mode == Mode::Status);
 }
 
-// Show the cached photo for the current selection, else the initial
-// placeholder.
-static void update_avatar_view() {
-  const char *name = s_state.count > 0 ? s_state.people[s_sel].name : "";
-  char init[2] = {static_cast<char>(name[0] ? toupper(name[0]) : '?'), '\0'};
-  lv_label_set_text(s_avatar_init, init);
-
-  bool have = s_state.count > 0 && s_av[s_sel].state == AvState::Loaded &&
-              s_av[s_sel].pixels;
-  if (have) {
-    lv_image_set_src(s_avatar_img, &s_av[s_sel].dsc);
-    lv_obj_clear_flag(s_avatar_img, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_add_flag(s_avatar_init, LV_OBJ_FLAG_HIDDEN);
-  } else {
-    lv_obj_add_flag(s_avatar_img, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_clear_flag(s_avatar_init, LV_OBJ_FLAG_HIDDEN);
-  }
+void end_toast(lv_timer_t *) {
+  s_toast_timer = nullptr;
+  s_toast[0] = '\0';
+  update_pill();
 }
 
-static void refresh_list() {
-  if (s_state.count == 0) {
-    lv_label_set_text(s_list_name, "No people yet");
-    lv_label_set_text(s_list_stats, "");
-    lv_label_set_text(s_list_balance, "Add people in the studio");
-    lv_obj_set_style_text_color(s_list_balance, COL_SUB, 0);
-    lv_label_set_text(s_list_index, "0 / 0");
-    lv_obj_add_flag(s_list_arc, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_add_flag(s_streak_badge, LV_OBJ_FLAG_HIDDEN);
-    update_avatar_view();
-    return;
-  }
-  if (s_sel >= s_state.count)
-    s_sel = 0;
-  const Person *p = &s_state.people[s_sel];
-
-  lv_label_set_text(s_list_name, p->name);
-
-  char stats[64];
-  snprintf(stats, sizeof(stats), "POTS %d    CUPS %d", p->pots, p->cups);
-  lv_label_set_text(s_list_stats, stats);
-
-  int b = balance_of(p);
-  char bal[48];
-  lv_color_t bal_col;
-  if (b > 0) {
-    snprintf(bal, sizeof(bal), "%s  +%d", b >= 6 ? "coffee hero" : "in credit",
-             b);
-    bal_col = COL_GOOD;
-  } else if (b < 0) {
-    snprintf(bal, sizeof(bal), "%s  %d",
-             b <= -6 ? "mega freeloader" : "freeloader", b);
-    bal_col = COL_BAD;
-  } else {
-    snprintf(bal, sizeof(bal), "even");
-    bal_col = COL_SUB;
-  }
-  lv_label_set_text(s_list_balance, bal);
-  lv_obj_set_style_text_color(s_list_balance, bal_col, 0);
-
-  // Glanceable standing: ring the avatar in the balance color (neutral when
-  // even, so most people get a quiet dark ring).
-  lv_obj_set_style_outline_color(s_avatar_box, b == 0 ? COL_BACK : bal_col, 0);
-
-  // Streak badge on the avatar's chin. One day isn't a streak. A streak that
-  // hasn't been fed today (weekdays only — weekends can't break it) inverts
-  // to a dark "SAVE" pill: brew before midnight or lose it.
-  if (p->streak >= 2) {
-    bool at_risk = !p->brewed_today && is_weekday_today();
-    char run[20];
-    snprintf(run, sizeof(run), at_risk ? "SAVE DAY %d" : "DAY %d", p->streak);
-    lv_label_set_text(s_streak_lbl, run);
-    lv_obj_set_style_bg_color(s_streak_badge, at_risk ? COL_BG : COL_FLAME, 0);
-    lv_obj_set_style_border_width(s_streak_badge, at_risk ? 1 : 0, 0);
-    lv_obj_set_style_text_color(s_streak_lbl, at_risk ? COL_FLAME : COL_BG, 0);
-    lv_obj_set_style_image_recolor(s_streak_flame, at_risk ? COL_FLAME : COL_BG,
-                                   0);
-    lv_obj_clear_flag(s_streak_badge, LV_OBJ_FLAG_HIDDEN);
-  } else {
-    lv_obj_add_flag(s_streak_badge, LV_OBJ_FLAG_HIDDEN);
-  }
-
-  char idx[16];
-  snprintf(idx, sizeof(idx), "%d / %d", s_sel + 1, s_state.count);
-  lv_label_set_text(s_list_index, idx);
-
-  // Rim arc mirrors the rotation position (1-based so it never looks empty).
-  if (s_state.count > 1) {
-    lv_arc_set_range(s_list_arc, 1, s_state.count);
-    lv_arc_set_value(s_list_arc, s_sel + 1);
-    lv_obj_clear_flag(s_list_arc, LV_OBJ_FLAG_HIDDEN);
-  } else {
-    lv_obj_add_flag(s_list_arc, LV_OBJ_FLAG_HIDDEN);
-  }
-
-  update_avatar_view();
-}
-
-// Ask the background loader to fetch an avatar (once per person, unless its URL
-// changes). No-op if already cached or in flight.
-static void request_avatar(int index) {
-  if (index < 0 || index >= s_state.count)
-    return;
-  if (s_av[index].state != AvState::Empty)
-    return;
-  if (!s_state.people[index].image_url[0])
-    return;
-  strncpy(s_av[index].url, s_state.people[index].image_url,
-          sizeof(s_av[index].url) - 1);
-  s_av[index].state = AvState::Requested;
-  kaffi_request_avatar(s_state.people[index].image_url);
-}
-
-// Kick off background loads for everyone (the visible person first).
-static void preload_avatars() {
-  request_avatar(s_sel);
-  for (int i = 0; i < s_state.count; i++)
-    request_avatar(i);
-}
-
-// Re-map the avatar cache onto the (possibly reordered) people list by URL, so
-// recency re-sorting never drops or re-fetches already-decoded photos.
-static void reconcile_cache() {
-  static AvatarSlot remapped[KAFFI_MAX_PEOPLE];
-  bool used[KAFFI_MAX_PEOPLE] = {false};
-  memset(remapped, 0, sizeof(remapped));
-
-  for (int i = 0; i < s_state.count; i++) {
-    const char *url = s_state.people[i].image_url;
-    if (!url[0])
-      continue;
-    for (int j = 0; j < KAFFI_MAX_PEOPLE; j++) {
-      if (!used[j] && s_av[j].state != AvState::Empty &&
-          strcmp(s_av[j].url, url) == 0) {
-        remapped[i] = s_av[j];
-        used[j] = true;
-        break;
-      }
-    }
-  }
-  // Free any decoded avatar that no longer maps to a current person.
-  for (int j = 0; j < KAFFI_MAX_PEOPLE; j++) {
-    if (used[j])
-      continue;
-    if (s_av[j].pixels)
-      heap_caps_free(s_av[j].pixels);
-    if (s_av[j].thumb_pixels)
-      heap_caps_free(s_av[j].thumb_pixels);
-  }
-  memcpy(s_av, remapped, sizeof(s_av));
-}
-
-static void show_toast(const char *msg) {
-  lv_label_set_text(s_toast, msg);
-  lv_obj_clear_flag(s_toast, LV_OBJ_FLAG_HIDDEN);
-  lv_obj_move_foreground(s_toast);
-
+void show_toast(const char *text) {
+  snprintf(s_toast, sizeof(s_toast), "%s", text);
   if (s_toast_timer)
     lv_timer_delete(s_toast_timer);
-  s_toast_timer = lv_timer_create(
-      [](lv_timer_t *) {
-        lv_obj_add_flag(s_toast, LV_OBJ_FLAG_HIDDEN);
-        s_toast_timer = nullptr;
-      },
-      KAFFI_TOAST_MS, nullptr);
+  s_toast_timer = lv_timer_create(end_toast, KAFFI_TOAST_MS, nullptr);
   lv_timer_set_repeat_count(s_toast_timer, 1);
+  lv_obj_set_style_opa(s_pill.pill, LV_OPA_COVER, LV_PART_MAIN);
+  update_pill();
 }
 
-// Post a coffee event for a specific person and reflect it optimistically.
-static void log_action(const char *pid, const char *pname, int kind, int qty,
-                       const char *toast) {
+// ─── The strip: offices on first boot, then people
+
+int strip_count() {
+  if (s_mode == Mode::Office)
+    return KAFFI_OFFICE_COUNT;
+  return s_mode == Mode::People ? s_state.count : 0;
+}
+
+void show_ring() {
+  volume_ring_set_level(RING_MAX * (s_shown + 1) / std::max(strip_count(), 1));
+}
+
+void set_subtitle(const char *text, uint32_t color, lv_opa_t opa) {
+  lv_label_set_text(s_caption.subtitle, text);
+  lv_obj_set_style_text_color(s_caption.subtitle, lv_color_hex(color),
+                              LV_PART_MAIN);
+  lv_obj_set_style_text_opa(s_caption.subtitle, opa, LV_PART_MAIN);
+}
+
+void show_person() {
+  const Person *p = person(s_shown);
+  if (!p)
+    return;
+  ui_marquee_text(s_caption.title, p->name);
+  char line[48];
+  int balance = balance_of(*p);
+  standing_text(balance, line, sizeof(line));
+  if (balance == 0)
+    set_subtitle(line, 0xFFFFFF, TEXT_OPA_SECONDARY);
+  else
+    set_subtitle(line, balance > 0 ? COL_GREEN : COL_RED, LV_OPA_COVER);
+  stats_text(*p, line, sizeof(line));
+  lv_label_set_text(s_caption.detail, line);
+  show_ring();
+  update_pill();
+}
+
+// Like a station in the radio's browse: name, what a tap does, and where.
+void show_office() {
+  ui_marquee_text(s_caption.title, KAFFI_OFFICES[s_shown].name);
+  set_subtitle("Tap to choose", 0xFFFFFF, TEXT_OPA_SECONDARY);
+  char position[16];
+  snprintf(position, sizeof(position), "%d / %d", s_shown + 1,
+           KAFFI_OFFICE_COUNT);
+  lv_label_set_text(s_caption.detail, position);
+  show_ring();
+  update_pill();
+}
+
+void show_item() {
+  if (s_mode == Mode::Office)
+    show_office();
+  else
+    show_person();
+}
+
+lv_color_t sky_of(int item) {
+  if (s_mode == Mode::Office)
+    return lv_color_hex(KAFFI_OFFICES[item].sky);
+  return avatar_tint(item);
+}
+
+CarouselTile strip_tile(int item) {
+  if (s_mode == Mode::Office) {
+    const KaffiOffice &o = KAFFI_OFFICES[item];
+    return {nullptr, lv_color_hex(o.tile), o.code, false};
+  }
+  avatars_request(s_state, item);
+  if (const lv_image_dsc_t *photo = avatar_photo(item))
+    return {photo, avatar_tint(item), nullptr, true};
+  static char initial[8];
+  const Person *p = person(item);
+  initial_of(p ? p->name : "", initial, sizeof(initial));
+  return {nullptr, lv_color_hex(COL_PLACEHOLDER), initial, true};
+}
+
+void on_tint_settled(lv_timer_t *t) {
+  lv_timer_pause(t);
+  if (strip_count() > 0)
+    backdrop_set(sky_of(s_shown), true);
+}
+
+// The name follows the strip like a station's: it fades as a tile leaves the
+// middle and changes at the halfway point, when it's gone.
+void strip_moved(int item, int32_t offset) {
+  if (item != s_shown) {
+    s_shown = item;
+    show_item();
+  }
+  lv_opa_t opa = ui_caption_fade(offset);
+  lv_obj_set_style_opa(s_caption.title, opa, LV_PART_MAIN);
+  if (pill_is_streak())
+    lv_obj_set_style_opa(s_pill.pill, opa, LV_PART_MAIN);
+  if (offset != 0) {
+    lv_timer_pause(s_tint_timer);
+    return;
+  }
+  lv_timer_reset(s_tint_timer);
+  lv_timer_resume(s_tint_timer);
+}
+
+void turn_strip(int steps) {
+  if (strip_count() == 0 || steps == 0)
+    return;
+  carousel_turn(steps);
+  s_sel = carousel_item();
+  if (s_mode == Mode::People)
+    avatars_request(s_state, s_sel);
+}
+
+void show_mode(Mode mode) {
+  s_mode = mode;
+  lv_obj_set_flag(s_status, LV_OBJ_FLAG_HIDDEN, mode != Mode::Status);
+  update_pill();
+}
+
+void pick_office(int office) {
+  haptic_buzz();
+  lv_label_set_text(s_status_label, "");
+  show_mode(Mode::Status);
+  if (s_office_picked)
+    s_office_picked(office);
+}
+
+// ─── Logging
+
+void log_for_selected(int kind, int qty) {
+  if (!person(s_sel))
+    return;
+  Person &p = s_state.people[s_sel];
   KaffiLogCmd cmd = {};
-  strncpy(cmd.person_id, pid, sizeof(cmd.person_id) - 1);
-  strncpy(cmd.person_name, pname, sizeof(cmd.person_name) - 1);
+  strncpy(cmd.person_id, p.id, sizeof(cmd.person_id) - 1);
+  strncpy(cmd.person_name, p.name, sizeof(cmd.person_name) - 1);
   cmd.kind = kind;
   cmd.quantity = qty;
   esp_event_post(APP_EVENT, APP_EVENT_KAFFI_LOG, &cmd, sizeof(cmd), 0);
   haptic_buzz();
-  for (int i = 0; i < s_state.count; i++) { // optimistic bump
-    if (strcmp(s_state.people[i].id, pid) != 0)
-      continue;
-    Person *pe = &s_state.people[i];
-    if (kind == KAFFI_BREW) {
-      pe->pots += qty;
-      pe->credit += kaffi_brew_credit(qty);
-      if (!pe->brewed_today) { // first brew of the day extends the streak
-        pe->brewed_today = true;
-        pe->streak++;
-      }
-    } else {
-      pe->cups += qty;
-    }
-    break;
-  }
+  sheet_close(s_log_sheet);
 
-  set_mode(Mode::List);
-  refresh_list();
+  const char *toast = log_toast(p, kind, qty, is_weekday_today());
+  // Shown at once; the next fetch confirms it.
+  if (kind == KAFFI_BREW) {
+    p.pots += qty;
+    p.credit += kaffi_brew_credit(qty);
+    if (!p.brewed_today) {
+      p.brewed_today = true;
+      p.streak++;
+    }
+  } else {
+    p.cups += qty;
+  }
+  show_person();
   show_toast(toast);
 }
 
-static void do_log(int kind, int qty) {
-  if (s_state.count == 0)
-    return;
-  const Person *p = &s_state.people[s_sel];
+// ─── Lists on sheets
 
-  // A little variety keeps the ritual fun (ASCII only — font has no glyphs
-  // beyond it).
-  static const char *cup_toasts[] = {"Enjoy!", "Cup logged", "Skol!",
-                                     "Drink up!"};
-  static const char *pot_toasts[] = {"What a hero!", "Fresh pot!",
-                                     "Legend move", "Brewtiful!"};
-  static uint32_t roll = 0;
-  roll++;
-  const char *toast;
-  if (kind == KAFFI_BREW)
-    toast = qty == 2 ? "Double hero!" : pot_toasts[roll % 4];
+void move_focus(lv_obj_t *list, int steps) {
+  int count = ui_list_count(list);
+  if (count == 0 || steps == 0)
+    return;
+  s_focus = std::clamp(s_focus + steps, 0, count - 1);
+  ui_list_focus(list, s_focus);
+}
+
+void close_sheet(lv_event_t *) {
+  if (lv_obj_t *sheet = open_sheet())
+    sheet_close(sheet);
+}
+
+void on_log_row(lv_event_t *e) {
+  auto row =
+      static_cast<int>(reinterpret_cast<intptr_t>(lv_event_get_user_data(e)));
+  if (row == 0)
+    log_for_selected(KAFFI_CUP, 1);
   else
-    toast = cup_toasts[roll % 4];
-
-  // First brew of the day extending a streak beats the regular quips — and
-  // rescuing an at-risk streak gets its own cheer.
-  static char streak_toast[24];
-  if (kind == KAFFI_BREW && !p->brewed_today && p->streak + 1 >= 2) {
-    bool saved = p->streak >= 2 && is_weekday_today();
-    snprintf(streak_toast, sizeof(streak_toast),
-             saved ? "Saved! Day %d" : "Day %d streak!", p->streak + 1);
-    toast = streak_toast;
-  }
-  log_action(p->id, p->name, kind, qty, toast);
+    log_for_selected(KAFFI_BREW, row);
 }
 
-// ─── Leaderboard
+void build_log() {
+  lv_obj_clean(s_log_content);
+  const Person *p = person(s_sel);
+  if (!p)
+    return;
+  ui_list_title(s_log_content, p->name, nullptr);
+  s_log_list = ui_list_create(s_log_content, s_log_sheet, ListSize::Large);
+  struct Choice {
+    const char *text;
+    int change;
+  };
+  const Choice choices[] = {{"Took a cup", -1},
+                            {"Brewed a pot", kaffi_brew_credit(1)},
+                            {"Brewed two pots", kaffi_brew_credit(2)}};
+  for (int i = 0; i < 3; i++) {
+    lv_obj_t *row = ui_list_row(s_log_list, choices[i].text, false);
+    char change[16];
+    signed_text(choices[i].change, change, sizeof(change));
+    lv_obj_t *value = ui_list_trailing(row, change);
+    lv_obj_set_style_text_opa(value, TEXT_OPA_SECONDARY, LV_PART_MAIN);
+    lv_obj_add_event_cb(row, on_log_row, LV_EVENT_SHORT_CLICKED,
+                        reinterpret_cast<void *>(static_cast<intptr_t>(i)));
+  }
+  s_focus = 0;
+  ui_list_focus(s_log_list, 0);
+  ui_list_back(s_log_content, ICON_ARROW_LEFT, "Back", close_sheet);
+}
 
-static void build_leaderboard() {
-  lv_obj_clean(s_lb_list);
+// A person's circle in a row: their photo, else their initial. The podium
+// gets a rim in its medal's color, on the photo's own edge so it keeps the
+// row's spacing to the name.
+void board_avatar(lv_obj_t *row, int index, int rank) {
+  lv_obj_t *slot = ui_box(row);
+  lv_obj_set_size(slot, THUMB_SIZE, THUMB_SIZE);
+  lv_obj_set_style_radius(slot, LV_RADIUS_CIRCLE, LV_PART_MAIN);
+  lv_obj_align(slot, LV_ALIGN_LEFT_MID, LIST_ROW_INSET, 0);
+  if (rank < 3) {
+    const uint32_t medals[] = {COL_YELLOW, COL_SILVER, COL_BRONZE};
+    lv_obj_set_style_border_color(slot, lv_color_hex(medals[rank]),
+                                  LV_PART_MAIN);
+    lv_obj_set_style_border_width(slot, 2, LV_PART_MAIN);
+    lv_obj_set_style_border_post(slot, true, LV_PART_MAIN);
+  }
+  if (const lv_image_dsc_t *thumb = avatar_thumb(index)) {
+    lv_obj_t *image = lv_image_create(slot);
+    lv_image_set_src(image, thumb);
+    lv_obj_center(image);
+    lv_obj_remove_flag(image, LV_OBJ_FLAG_CLICKABLE);
+    return;
+  }
+  lv_obj_set_style_bg_color(slot, lv_color_hex(COL_PLACEHOLDER), LV_PART_MAIN);
+  lv_obj_set_style_bg_opa(slot, LV_OPA_COVER, LV_PART_MAIN);
+  char initial[8];
+  initial_of(s_state.people[index].name, initial, sizeof(initial));
+  lv_obj_t *letter = lv_label_create(slot);
+  lv_obj_set_style_text_font(letter, &sf_medium_15, LV_PART_MAIN);
+  lv_obj_set_style_text_color(letter, lv_color_white(), LV_PART_MAIN);
+  lv_label_set_text(letter, initial);
+  lv_obj_center(letter);
+}
 
-  // People with no entries this year would just pad the middle with +0 rows.
+void build_board() {
+  lv_obj_clean(s_board_content);
+  s_board_list = nullptr;
+  ui_list_title(s_board_content, "Coffee heroes", nullptr);
   int order[KAFFI_MAX_PEOPLE];
-  int n = 0;
-  for (int i = 0; i < s_state.count; i++) {
-    const Person *p = &s_state.people[i];
-    if (p->pots > 0 || p->cups > 0)
-      order[n++] = i;
-  }
-
-  if (n == 0) {
-    lv_obj_t *l = lv_label_create(s_lb_list);
-    lv_label_set_text(l, "Nothing brewed yet");
-    lv_obj_set_style_text_font(l, &lv_font_montserrat_20, 0);
-    lv_obj_set_style_text_color(l, COL_SUB, 0);
-    lv_obj_t *sub = lv_label_create(s_lb_list);
-    lv_label_set_text(sub, "be the first hero");
-    lv_obj_set_style_text_font(sub, &lv_font_montserrat_14, 0);
-    lv_obj_set_style_text_color(sub, COL_SUB, 0);
-    return;
-  }
-
-  for (int i = 1; i < n; i++) { // insertion sort, balance desc
-    int key = order[i], j = i - 1;
-    while (j >= 0 && balance_of(&s_state.people[order[j]]) <
-                         balance_of(&s_state.people[key])) {
-      order[j + 1] = order[j];
-      j--;
-    }
-    order[j + 1] = key;
-  }
-
-  for (int rank = 0; rank < n; rank++) {
-    int idx = order[rank];
-    const Person *p = &s_state.people[idx];
-    int b = balance_of(p);
-    bool worst = (rank == n - 1) && (b < 0);
-    bool podium = !worst && rank < 3;
-    lv_color_t medal = (rank == 0)   ? COL_GOLD
-                       : (rank == 1) ? COL_SILVER
-                                     : COL_BRONZE;
-
-    lv_obj_t *row = lv_obj_create(s_lb_list);
-    lv_obj_remove_style_all(row);
-    lv_obj_set_size(row, 248, 54);
-    lv_obj_set_style_radius(row, 18, 0);
-    lv_obj_set_style_bg_color(row, worst ? COL_BAD : COL_BACK, 0);
-    lv_obj_set_style_bg_opa(row, LV_OPA_COVER, 0);
-    lv_obj_set_style_pad_left(row, 8, 0);
-    lv_obj_set_style_pad_right(row, 14, 0);
-    lv_obj_set_style_pad_column(row, 8, 0);
-    lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER,
-                          LV_FLEX_ALIGN_CENTER);
-
-    // Medal chip: filled circle for the podium, quiet number for the rest.
-    lv_obj_t *chip = lv_obj_create(row);
-    lv_obj_remove_style_all(chip);
-    lv_obj_set_size(chip, 24, 24);
-    lv_obj_set_style_radius(chip, LV_RADIUS_CIRCLE, 0);
-    if (podium) {
-      lv_obj_set_style_bg_color(chip, medal, 0);
-      lv_obj_set_style_bg_opa(chip, LV_OPA_COVER, 0);
-    }
-    lv_obj_clear_flag(chip, LV_OBJ_FLAG_SCROLLABLE);
-    char rankstr[8];
-    snprintf(rankstr, sizeof(rankstr), "%d", rank + 1);
-    lv_obj_t *lrank = lv_label_create(chip);
-    lv_label_set_text(lrank, rankstr);
-    lv_obj_set_style_text_font(lrank, &lv_font_montserrat_14, 0);
-    lv_obj_set_style_text_color(
-        lrank, podium ? COL_BG : (worst ? COL_TEXT : COL_SUB), 0);
-    lv_obj_center(lrank);
-
-    // Avatar thumbnail (pre-scaled, so no per-frame transform) or an initial
-    // chip. Podium thumbs get a medal ring.
-    lv_obj_t *thumb = lv_obj_create(row);
-    lv_obj_remove_style_all(thumb);
-    lv_obj_set_size(thumb, THUMB_SIZE, THUMB_SIZE);
-    lv_obj_set_style_radius(thumb, LV_RADIUS_CIRCLE, 0);
-    lv_obj_set_style_clip_corner(thumb, true, 0);
-    lv_obj_set_style_bg_color(thumb, COL_BREW, 0);
-    lv_obj_set_style_bg_opa(thumb, LV_OPA_COVER, 0);
-    lv_obj_clear_flag(thumb, LV_OBJ_FLAG_SCROLLABLE);
-    if (podium) {
-      lv_obj_set_style_border_width(thumb, 2, 0);
-      lv_obj_set_style_border_color(thumb, medal, 0);
-    }
-    if (s_av[idx].state == AvState::Loaded && s_av[idx].thumb_pixels) {
-      lv_obj_t *im = lv_image_create(thumb);
-      lv_image_set_src(im, &s_av[idx].thumb_dsc);
-      lv_obj_center(im);
-    } else {
-      char init[2] = {static_cast<char>(p->name[0] ? toupper(p->name[0]) : '?'),
-                      '\0'};
-      lv_obj_t *in = lv_label_create(thumb);
-      lv_label_set_text(in, init);
-      lv_obj_set_style_text_font(in, &lv_font_montserrat_20, 0);
-      lv_obj_set_style_text_color(in, COL_TEXT, 0);
-      lv_obj_center(in);
-    }
-
-    // Name over a small pots/cups detail line; both clip before the value.
-    lv_obj_t *cell = lv_obj_create(row);
-    lv_obj_remove_style_all(cell);
-    lv_obj_set_flex_grow(cell, 1);
-    lv_obj_set_height(cell, LV_SIZE_CONTENT);
-    lv_obj_set_flex_flow(cell, LV_FLEX_FLOW_COLUMN);
-    lv_obj_clear_flag(cell, LV_OBJ_FLAG_SCROLLABLE);
-
-    // Fixed one-line heights: without them long names wrap and blow the row
-    // open instead of ellipsizing.
-    lv_obj_t *lname = lv_label_create(cell);
-    lv_label_set_text(lname, p->name);
-    lv_label_set_long_mode(lname, LV_LABEL_LONG_DOT);
-    lv_obj_set_size(lname, LV_PCT(100), 24);
-    lv_obj_set_style_text_font(lname, &lv_font_montserrat_20, 0);
-    lv_obj_set_style_text_color(lname, COL_TEXT, 0);
-
-    char detail[32];
-    snprintf(detail, sizeof(detail), "%d pots  %d cups", p->pots, p->cups);
-    lv_obj_t *ldetail = lv_label_create(cell);
-    lv_label_set_text(ldetail, detail);
-    lv_label_set_long_mode(ldetail, LV_LABEL_LONG_CLIP);
-    lv_obj_set_size(ldetail, LV_PCT(100), 16);
-    lv_obj_set_style_text_font(ldetail, &lv_font_montserrat_14, 0);
-    lv_obj_set_style_text_color(ldetail, worst ? COL_TEXT : COL_SUB, 0);
-    lv_obj_set_style_text_opa(ldetail, worst ? LV_OPA_80 : LV_OPA_COVER, 0);
-
-    // Signed balance; the red row already marks the freeloader.
-    char right[16];
-    snprintf(right, sizeof(right), "%+d", b);
-    lv_obj_t *lbal = lv_label_create(row);
-    lv_label_set_text(lbal, right);
-    lv_obj_set_style_text_font(lbal, &lv_font_montserrat_20, 0);
-    lv_obj_set_style_text_color(
-        lbal, worst ? COL_TEXT : (b >= 0 ? COL_GOOD : COL_BAD), 0);
-  }
-}
-
-// Step the highlight through the list (radio speaker-picker style): accent the
-// active row and scroll it into view. No free-scrolling. Only the two affected
-// rows are restyled so each detent invalidates the minimum screen area.
-static int s_lb_prev_highlight = -1;
-static void highlight_lb_item(int h) {
-  if (!s_lb_list || s_state.count == 0)
-    return;
-  int n = lv_obj_get_child_count(s_lb_list);
-  if (s_lb_prev_highlight >= 0 && s_lb_prev_highlight < n &&
-      s_lb_prev_highlight != h) {
-    lv_obj_set_style_outline_width(
-        lv_obj_get_child(s_lb_list, s_lb_prev_highlight), 0, 0);
-  }
-  if (h >= 0 && h < n) {
-    lv_obj_t *row = lv_obj_get_child(s_lb_list, h);
-    // Outline draws outside the box, so toggling it never reflows the row.
-    lv_obj_set_style_outline_color(row, COL_CREAM, 0);
-    lv_obj_set_style_outline_width(row, 3, 0);
-    lv_obj_set_style_outline_pad(row, 0, 0);
-    lv_obj_scroll_to_view(row, LV_ANIM_ON);
-  }
-  s_lb_prev_highlight = h;
-}
-
-static void open_leaderboard() {
-  s_lb_highlight = 0;
-  s_lb_prev_highlight = -1; // rows were just rebuilt
-  build_leaderboard();
-  highlight_lb_item(s_lb_highlight);
-  s_lb_last_activity = esp_timer_get_time();
-  set_mode(Mode::Leaderboard);
-}
-
-// Open the action sheet for the current selection with their name + photo.
-static void open_action() {
-  const Person *p = &s_state.people[s_sel];
-  lv_label_set_text(s_action_name, p->name);
-  char init[2] = {static_cast<char>(p->name[0] ? toupper(p->name[0]) : '?'),
-                  '\0'};
-  lv_label_set_text(s_action_init, init);
-  if (s_av[s_sel].state == AvState::Loaded && s_av[s_sel].thumb_pixels) {
-    lv_image_set_src(s_action_avatar, &s_av[s_sel].thumb_dsc);
-    lv_obj_clear_flag(s_action_avatar, LV_OBJ_FLAG_HIDDEN);
+  int count = leaderboard_order(s_state, order);
+  if (count == 0) {
+    lv_obj_t *empty = label(s_board_content, &sf_regular_16, 0);
+    lv_obj_set_style_text_opa(empty, TEXT_OPA_SECONDARY, LV_PART_MAIN);
+    lv_label_set_text(empty, "Nothing brewed yet.\nBe the first hero.");
   } else {
-    lv_obj_add_flag(s_action_avatar, LV_OBJ_FLAG_HIDDEN);
+    s_board_list =
+        ui_list_create(s_board_content, s_board_sheet, ListSize::Tall);
+    for (int rank = 0; rank < count; rank++) {
+      const Person &p = s_state.people[order[rank]];
+      int balance = balance_of(p);
+      lv_obj_t *row = ui_list_row(s_board_list, p.name);
+      board_avatar(row, order[rank], rank);
+      char text[16];
+      signed_text(balance, text, sizeof(text));
+      lv_obj_t *value = ui_list_trailing(row, text);
+      lv_obj_set_style_text_color(value,
+                                  lv_color_hex(balance > 0   ? COL_GREEN
+                                               : balance < 0 ? COL_RED
+                                                             : 0xFFFFFF),
+                                  LV_PART_MAIN);
+      // Rows only show; the knob and the list's own scroll move through it.
+      lv_obj_remove_flag(row, LV_OBJ_FLAG_CLICKABLE);
+    }
+    s_focus = 0;
+    ui_list_focus(s_board_list, 0);
   }
-  set_mode(Mode::Action);
 }
 
-// ─── Encoder + inactivity tick (runs on the UI task)
+bool log_may_open() {
+  return have_people() && !sheet_is_visible(s_board_sheet);
+}
+bool log_may_close_from(lv_point_t start) {
+  return ui_list_may_close_from(s_log_list, start);
+}
+bool board_may_open() {
+  return have_people() && !sheet_is_visible(s_log_sheet);
+}
+bool board_may_close_from(lv_point_t start) {
+  return ui_list_may_close_from(s_board_list, start, SheetEdge::Top);
+}
 
-static void tick_cb(lv_timer_t *) {
-  int64_t now = esp_timer_get_time();
+lv_obj_t *make_sheet(SheetEdge edge, const SheetPolicy &policy,
+                     lv_obj_t **content) {
+  lv_obj_t *sheet = sheet_create(s_screen, edge, policy);
+  *content = sheet_add_content(sheet);
+  return sheet;
+}
+
+void build_sheets() {
+  static constexpr SheetPolicy LOG = {
+      .may_open = log_may_open,
+      .may_close_from = log_may_close_from,
+      .on_appear = build_log,
+      .on_opened = nullptr,
+      .on_closed = nullptr,
+  };
+  static constexpr SheetPolicy BOARD = {
+      .may_open = board_may_open,
+      .may_close_from = board_may_close_from,
+      .on_appear = build_board,
+      .on_opened = nullptr,
+      .on_closed = nullptr,
+  };
+  s_log_sheet = make_sheet(SheetEdge::Bottom, LOG, &s_log_content);
+  s_board_sheet = make_sheet(SheetEdge::Top, BOARD, &s_board_content);
+}
+
+// ─── Input
+
+void on_press(lv_event_t *) { s_swiped = false; }
+
+void on_tap(lv_event_t *) {
+  if (s_swiped || open_sheet())
+    return;
+  if (s_mode == Mode::Office)
+    pick_office(carousel_item());
+  else if (have_people())
+    sheet_open(s_log_sheet);
+}
+
+void on_hold(lv_event_t *) {
+  if (have_people() && !open_sheet() && !s_swiped) {
+    haptic_buzz();
+    sheet_open(s_board_sheet);
+  }
+}
+
+void on_gesture(lv_event_t *) {
+  if (open_sheet() || s_swiped || strip_count() == 0)
+    return;
+  lv_dir_t dir = lv_indev_get_gesture_dir(lv_indev_active());
+  if (dir != LV_DIR_LEFT && dir != LV_DIR_RIGHT)
+    return;
+  s_swiped = true;
+  turn_strip(dir == LV_DIR_LEFT ? 1 : -1);
+}
+
+void on_encoder_poll(lv_timer_t *) {
   int32_t steps = encoder_take_steps();
-  static int s_enc_accum = 0; // de-sensitize: require N detents per move
-
-  if (s_mode == Mode::List) {
-    if (steps != 0 && s_state.count > 0) {
-      s_enc_accum += static_cast<int>(steps) * 2; // detents -> half-detents
-      int moves = s_enc_accum / KAFFI_ENCODER_HALFSTEPS_PER_ITEM;
-      if (moves != 0) {
-        s_enc_accum -= moves * KAFFI_ENCODER_HALFSTEPS_PER_ITEM;
-        s_sel =
-            ((s_sel + moves) % s_state.count + s_state.count) % s_state.count;
-        refresh_list();        // instant: avatar is already cached if loaded
-        request_avatar(s_sel); // otherwise pull it now
-        avatar_nudge(moves);
-      }
-    }
-  } else if (s_mode == Mode::Leaderboard) {
-    if (steps != 0 && s_state.count > 0) {
-      s_lb_highlight += static_cast<int>(steps);
-      if (s_lb_highlight < 0)
-        s_lb_highlight = 0;
-      if (s_lb_highlight >= s_state.count)
-        s_lb_highlight = s_state.count - 1;
-      highlight_lb_item(s_lb_highlight);
-      s_lb_last_activity = now;
-    }
-    if (now - s_lb_last_activity >
-        static_cast<int64_t>(KAFFI_LEADERBOARD_TIMEOUT_MS) * 1000) {
-      set_mode(Mode::List);
-      refresh_list();
-    }
+  if (steps == 0)
+    return;
+  if (lv_obj_t *sheet = open_sheet()) {
+    move_focus(sheet == s_log_sheet ? s_log_list : s_board_list,
+               static_cast<int>(steps));
+    lv_display_trigger_activity(nullptr);
+    return;
   }
+  s_enc_halfsteps += static_cast<int>(steps) * 2;
+  int moves = s_enc_halfsteps / KAFFI_ENCODER_HALFSTEPS_PER_ITEM;
+  s_enc_halfsteps -= moves * KAFFI_ENCODER_HALFSTEPS_PER_ITEM;
+  turn_strip(moves);
 }
 
-// ─── View builders
-
-static lv_obj_t *make_view() {
-  lv_obj_t *v = lv_obj_create(s_screen);
-  lv_obj_remove_style_all(v);
-  lv_obj_set_size(v, 360, 360);
-  lv_obj_center(v);
-  lv_obj_clear_flag(v, LV_OBJ_FLAG_SCROLLABLE);
-  lv_obj_add_flag(v, LV_OBJ_FLAG_HIDDEN);
-  return v;
+void on_idle_check(lv_timer_t *) {
+  sheet_close_if_idle(s_log_sheet, KAFFI_SHEET_IDLE_MS);
+  sheet_close_if_idle(s_board_sheet, KAFFI_SHEET_IDLE_MS);
 }
 
-static lv_obj_t *make_label(lv_obj_t *parent, const lv_font_t *font,
-                            lv_color_t color, int dy) {
-  lv_obj_t *l = lv_label_create(parent);
-  lv_obj_set_style_text_font(l, font, 0);
-  lv_obj_set_style_text_color(l, color, 0);
-  lv_obj_set_style_text_align(l, LV_TEXT_ALIGN_CENTER, 0);
-  lv_obj_set_width(l, 320);
-  lv_label_set_long_mode(l, LV_LABEL_LONG_DOT);
-  lv_obj_align(l, LV_ALIGN_CENTER, 0, dy);
-  return l;
+// ─── Building
+
+void build_people() {
+  backdrop_create(s_screen, lv_color_black());
+  volume_ring_create(s_screen, 0, RING_MAX, 0);
+  volume_ring_set_look(ring_rest_look(lv_color_white()), 0);
+
+  // People are round, so a circle as wide as the radio's squircle looks
+  // smaller; they take some of the room under the pill instead.
+  static constexpr CarouselHooks HOOKS = {
+      strip_tile, strip_moved, &sf_rounded_semibold_48, KAFFI_PHOTO_PX};
+  carousel_create(s_screen, stage_tile_y(KAFFI_PHOTO_PX), HOOKS);
+  // The side tiles reach the bezel; the ring stays over them, as in the radio.
+  lv_obj_move_foreground(volume_ring_obj());
+
+  s_caption = ui_caption(s_screen);
+  s_pill = ui_pill(s_screen, ICON_FLAME);
+  lv_obj_align(s_pill.pill, LV_ALIGN_TOP_MID, 0, PILL_TOP);
+  lv_obj_add_flag(s_pill.pill, LV_OBJ_FLAG_HIDDEN);
 }
 
-static lv_obj_t *make_button(lv_obj_t *parent, const char *text, lv_color_t col,
-                             int w, int h, int dy, lv_event_cb_t cb) {
-  lv_obj_t *btn = lv_button_create(parent);
-  lv_obj_set_size(btn, w, h);
-  lv_obj_set_style_radius(btn, h / 2, 0);
-  lv_obj_set_style_border_width(btn, 0, 0);
-  lv_obj_set_style_shadow_width(btn, 0, 0);
-  lv_obj_set_style_bg_color(btn, col, 0);
-  lv_obj_set_style_bg_color(btn, lv_color_darken(col, LV_OPA_30),
-                            LV_STATE_PRESSED);
-
-  // Smooth bg fade on press/release.
-  static lv_style_transition_dsc_t tr;
-  static bool tr_init = false;
-  if (!tr_init) {
-    static const lv_style_prop_t props[] = {LV_STYLE_BG_COLOR,
-                                            LV_STYLE_PROP_INV};
-    lv_style_transition_dsc_init(&tr, props, lv_anim_path_ease_out, 130, 0,
-                                 nullptr);
-    tr_init = true;
-  }
-  lv_obj_set_style_transition(btn, &tr, 0);
-
-  lv_obj_align(btn, LV_ALIGN_CENTER, 0, dy);
-  lv_obj_add_event_cb(btn, cb, LV_EVENT_CLICKED, nullptr);
-
-  lv_obj_t *l = lv_label_create(btn);
-  lv_label_set_text(l, text);
-  lv_obj_set_style_text_font(l, &lv_font_montserrat_20, 0);
-  lv_obj_set_style_text_color(l, COL_TEXT, 0);
-  lv_obj_center(l);
-  return btn;
+lv_obj_t *make_overlay() {
+  lv_obj_t *overlay = ui_box(s_screen);
+  lv_obj_set_size(overlay, LCD_H_RES, LCD_V_RES);
+  lv_obj_set_style_bg_color(overlay, lv_color_black(), LV_PART_MAIN);
+  lv_obj_set_style_bg_opa(overlay, LV_OPA_COVER, LV_PART_MAIN);
+  ui_absorb_taps(overlay);
+  return overlay;
 }
 
-static void build_status() {
-  s_status_view = make_view();
-  s_status_lbl =
-      make_label(s_status_view, &lv_font_montserrat_28, COL_CREAM, 0);
-  lv_label_set_text(s_status_lbl, "kaffi");
+void build_status() {
+  s_status = make_overlay();
+  s_status_label = ui_activity_message(s_status, "");
 }
 
-static void build_avatar(lv_obj_t *parent) {
-  s_avatar_box = lv_obj_create(parent);
-  lv_obj_remove_style_all(s_avatar_box);
-  lv_obj_set_size(s_avatar_box, 96, 96);
-  lv_obj_set_style_radius(s_avatar_box, LV_RADIUS_CIRCLE, 0);
-  lv_obj_set_style_clip_corner(s_avatar_box, true, 0);
-  lv_obj_set_style_bg_color(s_avatar_box, COL_BREW, 0);
-  lv_obj_set_style_bg_opa(s_avatar_box, LV_OPA_COVER, 0);
-  lv_obj_clear_flag(s_avatar_box, LV_OBJ_FLAG_SCROLLABLE);
-  lv_obj_align(s_avatar_box, LV_ALIGN_CENTER, 0, -88);
-  // Balance ring — outline draws outside the photo, recolored per person.
-  lv_obj_set_style_outline_width(s_avatar_box, 3, 0);
-  lv_obj_set_style_outline_pad(s_avatar_box, 3, 0);
-  lv_obj_set_style_outline_color(s_avatar_box, COL_BACK, 0);
-
-  s_avatar_init = lv_label_create(s_avatar_box);
-  lv_obj_set_style_text_font(s_avatar_init, &lv_font_montserrat_40, 0);
-  lv_obj_set_style_text_color(s_avatar_init, COL_TEXT, 0);
-  lv_label_set_text(s_avatar_init, "?");
-  lv_obj_center(s_avatar_init);
-
-  s_avatar_img = lv_image_create(s_avatar_box);
-  lv_obj_center(s_avatar_img);
-  lv_obj_add_flag(s_avatar_img, LV_OBJ_FLAG_HIDDEN);
-}
-
-static void build_list() {
-  s_list_view = make_view();
-  lv_obj_add_flag(s_list_view, LV_OBJ_FLAG_CLICKABLE);
-
-  // Thin progress ring hugging the bezel: fills clockwise from the top as the
-  // encoder moves through the list. Not clickable, so taps fall through to the
-  // view's tap-to-open-action.
-  s_list_arc = lv_arc_create(s_list_view);
-  lv_obj_set_size(s_list_arc, 348, 348);
-  lv_obj_center(s_list_arc);
-  lv_arc_set_rotation(s_list_arc, 270);
-  lv_arc_set_bg_angles(s_list_arc, 0, 360);
-  lv_obj_set_style_arc_width(s_list_arc, 4, LV_PART_MAIN);
-  lv_obj_set_style_arc_width(s_list_arc, 4, LV_PART_INDICATOR);
-  lv_obj_set_style_arc_color(s_list_arc, COL_BACK, LV_PART_MAIN);
-  lv_obj_set_style_arc_color(s_list_arc, COL_CREAM, LV_PART_INDICATOR);
-  lv_obj_remove_style(s_list_arc, nullptr, LV_PART_KNOB);
-  lv_obj_clear_flag(s_list_arc, LV_OBJ_FLAG_CLICKABLE);
-  lv_obj_add_event_cb(
-      s_list_view,
-      [](lv_event_t *) {
-        if (s_state.count == 0)
-          return;
-        open_action();
-      },
-      LV_EVENT_SHORT_CLICKED, nullptr);
-  lv_obj_add_event_cb(
-      s_list_view, [](lv_event_t *) { open_leaderboard(); },
-      LV_EVENT_LONG_PRESSED, nullptr);
-
-  build_avatar(s_list_view);
-
-  // Streak pill straddling the avatar's bottom edge (box is 96px at -88, so
-  // its edge sits at -40). Built after the avatar to draw above it.
-  s_streak_badge = lv_obj_create(s_list_view);
-  lv_obj_remove_style_all(s_streak_badge);
-  lv_obj_set_size(s_streak_badge, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
-  lv_obj_set_style_bg_color(s_streak_badge, COL_FLAME, 0);
-  lv_obj_set_style_bg_opa(s_streak_badge, LV_OPA_COVER, 0);
-  lv_obj_set_style_radius(s_streak_badge, LV_RADIUS_CIRCLE, 0);
-  lv_obj_set_style_pad_hor(s_streak_badge, 9, 0);
-  lv_obj_set_style_pad_ver(s_streak_badge, 2, 0);
-  lv_obj_set_flex_flow(s_streak_badge, LV_FLEX_FLOW_ROW);
-  lv_obj_set_flex_align(s_streak_badge, LV_FLEX_ALIGN_CENTER,
-                        LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-  lv_obj_set_style_pad_column(s_streak_badge, 3, 0);
-  lv_obj_align(s_streak_badge, LV_ALIGN_CENTER, 0, -40);
-  lv_obj_clear_flag(s_streak_badge, LV_OBJ_FLAG_CLICKABLE);
-  lv_obj_clear_flag(s_streak_badge, LV_OBJ_FLAG_SCROLLABLE);
-  lv_obj_add_flag(s_streak_badge, LV_OBJ_FLAG_HIDDEN);
-  lv_obj_set_style_border_color(s_streak_badge, COL_FLAME, 0);
-  s_streak_flame = lv_image_create(s_streak_badge);
-  lv_image_set_src(s_streak_flame, &img_flame);
-  lv_obj_set_style_image_recolor(s_streak_flame, COL_BG, 0);
-  lv_obj_set_style_image_recolor_opa(s_streak_flame, LV_OPA_COVER, 0);
-  s_streak_lbl = lv_label_create(s_streak_badge);
-  lv_obj_set_style_text_font(s_streak_lbl, &lv_font_montserrat_14, 0);
-  lv_obj_set_style_text_color(s_streak_lbl, COL_BG, 0);
-
-  s_list_name = make_label(s_list_view, &lv_font_montserrat_28, COL_TEXT, -12);
-  s_list_stats = make_label(s_list_view, &lv_font_montserrat_20, COL_SUB, 24);
-  s_list_balance =
-      make_label(s_list_view, &lv_font_montserrat_20, COL_CREAM, 58);
-  s_list_index = make_label(s_list_view, &lv_font_montserrat_14, COL_SUB, 92);
-  lv_obj_t *hint =
-      make_label(s_list_view, &lv_font_montserrat_14, COL_SUB, 128);
-  lv_label_set_text(hint, "hold for stats");
-  lv_obj_set_style_text_opa(hint, LV_OPA_60, 0);
-
-  // Network pill at the top of the circle. Hidden while online with nothing
-  // queued, so the screen looks exactly as before in the happy case.
-  s_net_pill = lv_obj_create(s_list_view);
-  lv_obj_remove_style_all(s_net_pill);
-  lv_obj_set_size(s_net_pill, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
-  lv_obj_set_style_bg_color(s_net_pill, COL_BAD, 0);
-  lv_obj_set_style_bg_opa(s_net_pill, LV_OPA_COVER, 0);
-  lv_obj_set_style_radius(s_net_pill, LV_RADIUS_CIRCLE, 0);
-  lv_obj_set_style_pad_hor(s_net_pill, 10, 0);
-  lv_obj_set_style_pad_ver(s_net_pill, 3, 0);
-  lv_obj_align(s_net_pill, LV_ALIGN_CENTER, 0, -148);
-  lv_obj_clear_flag(s_net_pill, LV_OBJ_FLAG_CLICKABLE);
-  lv_obj_clear_flag(s_net_pill, LV_OBJ_FLAG_SCROLLABLE);
-  lv_obj_add_flag(s_net_pill, LV_OBJ_FLAG_HIDDEN);
-  s_net_lbl = lv_label_create(s_net_pill);
-  lv_obj_set_style_text_font(s_net_lbl, &lv_font_montserrat_14, 0);
-  lv_obj_set_style_text_color(s_net_lbl, COL_BG, 0);
-  lv_obj_center(s_net_lbl);
-}
-
-static void build_action() {
-  s_action_view = make_view();
-
-  // Small avatar so there's no doubt who the log lands on.
-  lv_obj_t *thumb = lv_obj_create(s_action_view);
-  lv_obj_remove_style_all(thumb);
-  lv_obj_set_size(thumb, THUMB_SIZE, THUMB_SIZE);
-  lv_obj_set_style_radius(thumb, LV_RADIUS_CIRCLE, 0);
-  lv_obj_set_style_clip_corner(thumb, true, 0);
-  lv_obj_set_style_bg_color(thumb, COL_BREW, 0);
-  lv_obj_set_style_bg_opa(thumb, LV_OPA_COVER, 0);
-  lv_obj_clear_flag(thumb, LV_OBJ_FLAG_SCROLLABLE);
-  lv_obj_align(thumb, LV_ALIGN_CENTER, 0, -136);
-
-  s_action_init = lv_label_create(thumb);
-  lv_obj_set_style_text_font(s_action_init, &lv_font_montserrat_20, 0);
-  lv_obj_set_style_text_color(s_action_init, COL_TEXT, 0);
-  lv_label_set_text(s_action_init, "?");
-  lv_obj_center(s_action_init);
-
-  s_action_avatar = lv_image_create(thumb);
-  lv_obj_center(s_action_avatar);
-  lv_obj_add_flag(s_action_avatar, LV_OBJ_FLAG_HIDDEN);
-
-  s_action_name =
-      make_label(s_action_view, &lv_font_montserrat_20, COL_TEXT, -102);
-  lv_obj_set_width(s_action_name, 240); // top of the circle is narrow
-  // "Took a cup" first — it's the most common action.
-  make_button(s_action_view, "Took a cup", COL_CUP, 264, 66, -34,
-              [](lv_event_t *) { do_log(KAFFI_CUP, 1); });
-  make_button(s_action_view, "Brewed a pot", COL_BREW, 264, 66, 44,
-              [](lv_event_t *) { set_mode(Mode::Pots); });
-  make_button(s_action_view, "Back", COL_BACK, 140, 48, 118,
-              [](lv_event_t *) { set_mode(Mode::List); });
-}
-
-static void build_pots() {
-  s_pots_view = make_view();
-  lv_obj_t *q = make_label(s_pots_view, &lv_font_montserrat_28, COL_TEXT, -112);
-  lv_label_set_text(q, "How many pots?");
-  make_button(s_pots_view, "1 pot", COL_BREW, 264, 66, -34,
-              [](lv_event_t *) { do_log(KAFFI_BREW, 1); });
-  make_button(s_pots_view, "2 pots", COL_BREW, 264, 66, 44,
-              [](lv_event_t *) { do_log(KAFFI_BREW, 2); });
-  make_button(s_pots_view, "Back", COL_BACK, 140, 48, 118,
-              [](lv_event_t *) { set_mode(Mode::Action); });
-}
-
-static void build_leaderboard_view() {
-  s_lb_view = make_view();
-  lv_obj_add_flag(s_lb_view, LV_OBJ_FLAG_CLICKABLE);
-  lv_obj_add_event_cb(
-      s_lb_view,
-      [](lv_event_t *) {
-        // tap to exit
-        set_mode(Mode::List);
-        refresh_list();
-      },
-      LV_EVENT_SHORT_CLICKED, nullptr);
-
-  lv_obj_t *overline = lv_label_create(s_lb_view);
-  lv_label_set_text(overline, "COFFEE HEROES");
-  lv_obj_set_style_text_font(overline, &lv_font_montserrat_14, 0);
-  lv_obj_set_style_text_color(overline, COL_GOLD, 0);
-  lv_obj_align(overline, LV_ALIGN_TOP_MID, 0, 34);
-
-  lv_obj_t *title = lv_label_create(s_lb_view);
-  lv_label_set_text(title, "This year");
-  lv_obj_set_style_text_font(title, &lv_font_montserrat_28, 0);
-  lv_obj_set_style_text_color(title, COL_CREAM, 0);
-  lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 54);
-
-  s_lb_list = lv_obj_create(s_lb_view);
-  lv_obj_remove_style_all(s_lb_list);
-  // Runs from below the header to the bottom of the screen, so rows scroll
-  // off the display edge instead of vanishing at a hard cutoff line. The
-  // large bottom padding lets the last row scroll up clear of the curved
-  // bottom corners.
-  lv_obj_set_size(s_lb_list, 276, 254);
-  lv_obj_align(s_lb_list, LV_ALIGN_TOP_MID, 0, 106);
-  lv_obj_set_flex_flow(s_lb_list, LV_FLEX_FLOW_COLUMN);
-  lv_obj_set_flex_align(s_lb_list, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER,
-                        LV_FLEX_ALIGN_CENTER);
-  lv_obj_set_style_pad_row(s_lb_list, 8, 0);
-  lv_obj_set_style_pad_top(s_lb_list, 8, 0);
-  lv_obj_set_style_pad_bottom(s_lb_list, 72, 0);
-  lv_obj_set_scroll_dir(s_lb_list, LV_DIR_VER);
-  lv_obj_add_event_cb(
-      s_lb_list,
-      [](lv_event_t *) { s_lb_last_activity = esp_timer_get_time(); },
-      LV_EVENT_SCROLL_BEGIN, nullptr);
-}
-
-static void build_toast() {
-  s_toast = lv_label_create(lv_layer_top());
-  lv_obj_set_style_bg_color(s_toast, COL_BREW, 0);
-  lv_obj_set_style_bg_opa(s_toast, LV_OPA_COVER, 0);
-  lv_obj_set_style_radius(s_toast, 24, 0);
-  lv_obj_set_style_pad_all(s_toast, 16, 0);
-  lv_obj_set_style_text_font(s_toast, &lv_font_montserrat_20, 0);
-  lv_obj_set_style_text_color(s_toast, COL_TEXT, 0);
-  lv_obj_align(s_toast, LV_ALIGN_CENTER, 0, 0);
-  lv_obj_add_flag(s_toast, LV_OBJ_FLAG_HIDDEN);
-}
+} // namespace
 
 // ─── Public API
 
@@ -950,238 +595,179 @@ void ui_init() {
   lv_indev_t *touch = nullptr;
   display_init(&disp, &touch);
 
-  if (display_lock(1000)) {
-    s_screen = lv_screen_active();
-    lv_obj_set_style_bg_color(s_screen, COL_BG, 0);
-    lv_obj_set_style_bg_opa(s_screen, LV_OPA_COVER, 0);
-    lv_obj_clear_flag(s_screen, LV_OBJ_FLAG_SCROLLABLE);
+  if (!display_lock(1000))
+    return;
+  s_screen = lv_screen_active();
+  lv_obj_set_style_bg_color(s_screen, lv_color_black(), LV_PART_MAIN);
+  lv_obj_remove_flag(s_screen, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_add_event_cb(s_screen, on_press, LV_EVENT_PRESSED, nullptr);
+  lv_obj_add_event_cb(s_screen, on_tap, LV_EVENT_SHORT_CLICKED, nullptr);
+  lv_obj_add_event_cb(s_screen, on_hold, LV_EVENT_LONG_PRESSED, nullptr);
+  lv_obj_add_event_cb(s_screen, on_gesture, LV_EVENT_GESTURE, nullptr);
 
-    build_status();
-    build_list();
-    build_action();
-    build_pots();
-    build_leaderboard_view();
-    build_toast();
+  build_people();
+  build_status();
+  build_sheets();
+  sheets_track_touch(touch);
 
-    set_mode(Mode::Status);
-    display_set_backlight(KAFFI_BACKLIGHT_NORMAL); // auto-dimming disabled
-    lv_timer_create(tick_cb, KAFFI_ENCODER_POLL_MS, nullptr);
-
-    display_unlock();
-  }
+  show_mode(Mode::Status);
+  display_set_backlight(KAFFI_BACKLIGHT_NORMAL);
+  lv_timer_create(on_encoder_poll, KAFFI_ENCODER_POLL_MS, nullptr);
+  lv_timer_create(on_idle_check, IDLE_CHECK_MS, nullptr);
+  s_tint_timer = lv_timer_create(on_tint_settled, TINT_SETTLE_MS, nullptr);
+  lv_timer_pause(s_tint_timer);
+  display_unlock();
   ESP_LOGI(TAG, "UI initialized");
 }
 
-void ui_show_splash() {
-  if (!display_lock(200))
-    return;
-  lv_label_set_text(s_status_lbl, "kaffi");
-  set_mode(Mode::Status);
-  display_unlock();
-}
-
-// ─── First-boot setup screens (called from app_main, before the main flow)
-
-void ui_show_wifi_setup(const char *ap_name) {
-  if (!display_lock(1000))
-    return;
-
-  lv_obj_t *view = lv_obj_create(s_screen);
-  lv_obj_remove_style_all(view);
-  lv_obj_set_size(view, 360, 360);
-  lv_obj_center(view);
-  lv_obj_set_style_bg_color(view, COL_BG, 0);
-  lv_obj_set_style_bg_opa(view, LV_OPA_COVER, 0);
-  lv_obj_clear_flag(view, LV_OBJ_FLAG_SCROLLABLE);
-
-  char qr_data[80];
-  snprintf(qr_data, sizeof(qr_data), "WIFI:T:nopass;S:%s;;", ap_name);
-  lv_obj_t *qr = lv_qrcode_create(view);
-  lv_qrcode_set_size(qr, 150);
-  lv_qrcode_set_dark_color(qr, COL_TEXT);
-  lv_qrcode_set_light_color(qr, COL_BG);
-  lv_qrcode_update(qr, qr_data, strlen(qr_data));
-  lv_obj_align(qr, LV_ALIGN_CENTER, 0, -40);
-
-  lv_obj_t *msg = make_label(view, &lv_font_montserrat_20, COL_CREAM, 80);
-  char text[96];
-  snprintf(text, sizeof(text), "Scan to join \"%s\"\nthen set up WiFi",
-           ap_name);
-  lv_label_set_text(msg, text);
-
-  display_unlock();
-}
-
-static SemaphoreHandle_t s_office_sem = nullptr;
-static int s_office_choice = -1;
-static lv_obj_t *s_office_view = nullptr;
-
-int ui_pick_office() {
-  s_office_sem = xSemaphoreCreateBinary();
-  if (!s_office_sem)
-    return 0;
-
-  if (display_lock(1000)) {
-    s_office_view = lv_obj_create(s_screen);
-    lv_obj_remove_style_all(s_office_view);
-    lv_obj_set_size(s_office_view, 360, 360);
-    lv_obj_center(s_office_view);
-    lv_obj_set_style_bg_color(s_office_view, COL_BG, 0);
-    lv_obj_set_style_bg_opa(s_office_view, LV_OPA_COVER, 0);
-    lv_obj_clear_flag(s_office_view, LV_OBJ_FLAG_SCROLLABLE);
-
-    lv_obj_t *title =
-        make_label(s_office_view, &lv_font_montserrat_28, COL_TEXT, -110);
-    lv_label_set_text(title, "Which office?");
-
-    // A few offices fit the round screen as stacked buttons; revisit the
-    // layout before this outgrows it.
-    for (int i = 0; i < KAFFI_OFFICE_COUNT; i++) {
-      lv_obj_t *btn = make_button(
-          s_office_view, KAFFI_OFFICES[i].name, COL_BREW, 264, 66, -30 + i * 80,
-          [](lv_event_t *e) {
-            auto *b = static_cast<lv_obj_t *>(lv_event_get_target(e));
-            s_office_choice = static_cast<int>(
-                reinterpret_cast<intptr_t>(lv_obj_get_user_data(b)));
-            haptic_buzz();
-            xSemaphoreGive(s_office_sem);
-          });
-      lv_obj_set_user_data(btn,
-                           reinterpret_cast<void *>(static_cast<intptr_t>(i)));
-    }
-    display_unlock();
-  }
-
-  xSemaphoreTake(s_office_sem, portMAX_DELAY);
-
-  if (display_lock(1000)) {
-    lv_obj_delete(s_office_view);
-    s_office_view = nullptr;
-    display_unlock();
-  }
-  vSemaphoreDelete(s_office_sem);
-  s_office_sem = nullptr;
-  return s_office_choice < 0 ? 0 : s_office_choice;
-}
+void ui_show_splash() { ui_set_status(""); }
 
 void ui_set_status(const char *msg) {
   if (!display_lock(200))
     return;
-  lv_label_set_text(s_status_lbl, msg);
-  set_mode(Mode::Status);
+  lv_label_set_text(s_status_label, msg);
+  show_mode(Mode::Status);
   display_unlock();
 }
 
-void ui_set_offline(bool offline, int pending) {
-  if (!s_net_pill || !display_lock(200))
+// A white card, so the code reads dark on light the way every camera expects.
+void ui_show_wifi_setup(const char *ap_name) {
+  constexpr int CARD = 164;
+  constexpr int CODE = 136;
+  if (!display_lock(1000))
     return;
-  if (!offline && pending <= 0) {
-    lv_obj_add_flag(s_net_pill, LV_OBJ_FLAG_HIDDEN);
-  } else {
-    char buf[40];
-    if (offline && pending > 0)
-      snprintf(buf, sizeof(buf), "OFFLINE, %d PENDING", pending);
-    else if (offline)
-      snprintf(buf, sizeof(buf), "OFFLINE");
-    else
-      snprintf(buf, sizeof(buf), "%d PENDING", pending);
-    lv_label_set_text(s_net_lbl, buf);
-    // Red while the network is down; muted once it's back and just draining.
-    lv_obj_set_style_bg_color(s_net_pill, offline ? COL_BAD : COL_SUB, 0);
-    lv_obj_clear_flag(s_net_pill, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_move_foreground(s_net_pill);
-  }
+  lv_obj_t *view = make_overlay();
+  ui_list_title(view, "Set up Wi-Fi", nullptr);
+
+  lv_obj_t *card = ui_box(view);
+  lv_obj_set_size(card, CARD, CARD);
+  lv_obj_set_style_radius(card, 24, LV_PART_MAIN);
+  lv_obj_set_style_bg_color(card, lv_color_white(), LV_PART_MAIN);
+  lv_obj_set_style_bg_opa(card, LV_OPA_COVER, LV_PART_MAIN);
+  lv_obj_align(card, LV_ALIGN_CENTER, 0, 4);
+
+  char data[80];
+  snprintf(data, sizeof(data), "WIFI:T:nopass;S:%s;;", ap_name);
+  lv_obj_t *code = lv_qrcode_create(card);
+  lv_qrcode_set_size(code, CODE);
+  lv_qrcode_set_dark_color(code, lv_color_black());
+  lv_qrcode_set_light_color(code, lv_color_white());
+  lv_qrcode_update(code, data, strlen(data));
+  lv_obj_center(code);
+
+  lv_obj_t *hint = label(view, &sf_regular_16, 118);
+  lv_obj_set_style_text_opa(hint, TEXT_OPA_SECONDARY, LV_PART_MAIN);
+  char text[96];
+  snprintf(text, sizeof(text),
+           "Scan to join \u201C%s\u201D,\nthen pick the Wi-Fi", ap_name);
+  lv_label_set_text(hint, text);
   display_unlock();
+}
+
+// The radio's browse, with offices for stations.
+void ui_show_office_picker(void (*picked)(int office)) {
+  if (!display_lock(1000))
+    return;
+  s_office_picked = picked;
+  s_sel = s_shown = 0;
+  show_mode(Mode::Office);
+  carousel_open(KAFFI_OFFICE_COUNT, 0, nullptr);
+  show_office();
+  backdrop_set(sky_of(0), false);
+  display_unlock();
+}
+
+#ifdef ESP_PLATFORM
+int ui_pick_office() {
+  static SemaphoreHandle_t picked;
+  static int office;
+  picked = xSemaphoreCreateBinary();
+  if (!picked)
+    return 0;
+  ui_show_office_picker([](int choice) {
+    office = choice;
+    xSemaphoreGive(picked);
+  });
+  xSemaphoreTake(picked, portMAX_DELAY);
+  vSemaphoreDelete(picked);
+  return office;
+}
+#endif
+
+void ui_set_offline(bool offline, int pending) {
+  if (!display_lock(200))
+    return;
+  s_offline = offline;
+  s_pending = pending;
+  update_pill();
+  display_unlock();
+}
+
+// The same people in the same order, with the same photos: only their
+// numbers can have changed.
+static bool same_people(const KaffiState &a, const KaffiState &b) {
+  if (a.count != b.count)
+    return false;
+  for (int i = 0; i < a.count; i++)
+    if (strcmp(a.people[i].id, b.people[i].id) != 0 ||
+        strcmp(a.people[i].image_url, b.people[i].image_url) != 0)
+      return false;
+  return true;
 }
 
 void ui_update_people(const KaffiState *state) {
-  if (!state)
+  if (!state || !display_lock(200))
     return;
-  if (!display_lock(200))
+  // The periodic refresh mostly brings new numbers. Leave the strip alone
+  // then: rebuilding it would stop a turn mid-glide.
+  if (s_mode == Mode::People && same_people(*state, s_state)) {
+    memcpy(&s_state, state, sizeof(s_state));
+    show_person();
+    display_unlock();
     return;
-
-  // Keep the cursor on the same person across refreshes: the order is stable
-  // (alphabetical), but a joiner/leaver can still shift indices.
-  char keep_id[KAFFI_ID_LEN] = {};
-  if (s_state.count > 0 && s_sel < s_state.count)
-    strncpy(keep_id, s_state.people[s_sel].id, sizeof(keep_id) - 1);
-
-  memcpy(&s_state, state, sizeof(s_state));
-
-  s_sel = 0;
-  if (keep_id[0])
-    for (int i = 0; i < s_state.count; i++)
-      if (strcmp(s_state.people[i].id, keep_id) == 0) {
-        s_sel = i;
-        break;
-      }
-  reconcile_cache();
-  refresh_list();
-  preload_avatars();
-
-  if (s_mode == Mode::Status && s_state.count > 0) {
-    set_mode(Mode::List);
   }
+  // Stay on the same person across refreshes: someone joining or leaving
+  // shifts everyone after them.
+  char keep[KAFFI_ID_LEN] = {};
+  if (const Person *p = person(s_sel))
+    strncpy(keep, p->id, sizeof(keep) - 1);
+  memcpy(&s_state, state, sizeof(s_state));
+  s_sel = 0;
+  for (int i = 0; keep[0] && i < s_state.count; i++)
+    if (strcmp(s_state.people[i].id, keep) == 0)
+      s_sel = i;
+  avatars_follow(s_state);
+
+  if (s_state.count == 0) {
+    lv_label_set_text(s_status_label,
+                      "No one here yet.\nAdd people in the Studio.");
+    show_mode(Mode::Status);
+    display_unlock();
+    return;
+  }
+  bool first = s_mode != Mode::People;
+  s_shown = s_sel;
+  if (first)
+    carousel_open(s_state.count, s_sel, nullptr);
+  else
+    carousel_reload(s_state.count, s_sel);
+  show_person();
+  backdrop_set(avatar_tint(s_sel), !first);
+  avatars_preload(s_state, s_sel);
+  show_mode(Mode::People);
   display_unlock();
 }
 
 void ui_set_avatar(const char *url, unsigned char *pixels, int w, int h) {
   if (!display_lock(200)) {
-    if (pixels)
-      heap_caps_free(pixels);
+    heap_caps_free(pixels);
     return;
   }
-
-  // Match the result to a person by URL (robust to list reordering).
-  int idx = -1;
-  if (url)
-    for (int i = 0; i < s_state.count; i++)
-      if (strcmp(s_state.people[i].image_url, url) == 0) {
-        idx = i;
-        break;
-      }
-
-  if (idx < 0) { // person no longer in the list
-    if (pixels)
-      heap_caps_free(pixels);
-    display_unlock();
-    return;
+  int index = avatars_store(s_state, url, pixels, w, h);
+  if (index >= 0) {
+    carousel_refresh(index);
+    if (index == s_shown && have_people())
+      backdrop_set(avatar_tint(index), true);
   }
-  if (!pixels) { // fetch/decode failed — allow a retry on the next refresh
-    s_av[idx].state = AvState::Empty;
-    display_unlock();
-    return;
-  }
-
-  AvatarSlot *a = &s_av[idx];
-  if (a->pixels)
-    heap_caps_free(a->pixels);
-  if (a->thumb_pixels)
-    heap_caps_free(a->thumb_pixels);
-  a->pixels = pixels;
-  a->state = AvState::Loaded;
-  a->dsc.header.magic = LV_IMAGE_HEADER_MAGIC;
-  a->dsc.header.cf = LV_COLOR_FORMAT_RGB565_SWAPPED;
-  a->dsc.header.w = static_cast<uint32_t>(w);
-  a->dsc.header.h = static_cast<uint32_t>(h);
-  a->dsc.header.stride = static_cast<uint32_t>(w * 2);
-  a->dsc.data_size = static_cast<uint32_t>(w * h * 2);
-  a->dsc.data = a->pixels;
-  // Pre-scaled once via the shared box-average — scaled lv_image transforms
-  // run through LVGL's slow per-pixel CPU path on every frame.
-  a->thumb_pixels = art_scale_rgb565(pixels, w, h, THUMB_SIZE, THUMB_SIZE);
-  if (a->thumb_pixels) {
-    a->thumb_dsc.header.magic = LV_IMAGE_HEADER_MAGIC;
-    a->thumb_dsc.header.cf = LV_COLOR_FORMAT_RGB565_SWAPPED;
-    a->thumb_dsc.header.w = THUMB_SIZE;
-    a->thumb_dsc.header.h = THUMB_SIZE;
-    a->thumb_dsc.header.stride = THUMB_SIZE * 2;
-    a->thumb_dsc.data_size = THUMB_SIZE * THUMB_SIZE * 2;
-    a->thumb_dsc.data = a->thumb_pixels;
-  }
-  strncpy(a->url, url, sizeof(a->url) - 1);
-
-  if (idx == s_sel)
-    update_avatar_view();
   display_unlock();
 }
