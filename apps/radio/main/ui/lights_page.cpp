@@ -3,8 +3,8 @@
 #include "hal_pins.h"
 #include "haptic.h"
 #include "lights.h"
-#include "ui/motion.h"
-#include "ui/primitives.h"
+#include "motion.h"
+#include "primitives.h"
 
 // lv_area_intersect is only declared in the private header.
 #include "src/misc/lv_area_private.h"

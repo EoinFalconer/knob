@@ -1,5 +1,7 @@
-#include "ui/activity.h"
-#include "ui/primitives.h"
+#include "activity.h"
+#include "fonts.h"
+#include "primitives.h"
+#include "theme.h"
 
 #include <cmath>
 #include <numbers>
@@ -78,4 +80,18 @@ lv_obj_t *activity_create(lv_obj_t *parent) {
   lv_anim_set_repeat_count(&a, LV_ANIM_REPEAT_INFINITE);
   lv_anim_start(&a);
   return ring;
+}
+
+lv_obj_t *ui_activity_message(lv_obj_t *parent, const char *text) {
+  constexpr int SPINNER_Y = -16;
+  constexpr int TEXT_Y = 24;
+  lv_obj_align(activity_create(parent), LV_ALIGN_CENTER, 0, SPINNER_Y);
+  lv_obj_t *label = lv_label_create(parent);
+  lv_obj_set_style_text_color(label, lv_color_white(), LV_PART_MAIN);
+  lv_obj_set_style_text_opa(label, TEXT_OPA_SECONDARY, LV_PART_MAIN);
+  lv_obj_set_style_text_font(label, &sf_regular_16, LV_PART_MAIN);
+  lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
+  lv_label_set_text(label, text);
+  lv_obj_align(label, LV_ALIGN_CENTER, 0, TEXT_Y);
+  return label;
 }

@@ -38,11 +38,6 @@ void speaker_line(const SonosGroup &group, const char *saved_name, char *out,
 SonosGroup group_from_discovery(const DiscoveryResult &scan,
                                 const char *room_name);
 
-// Background color for album art (byte-swapped RGB565, as decoded): the
-// artwork's most vivid dominant color, darkened to the same depth as the
-// station colors so white text stays readable. Like Apple Music's backdrop,
-// but one solid color: gradients band on RGB565 and cost more to repaint.
-uint32_t artwork_tint(const uint8_t *rgb565_swapped, int pixel_count);
 
 // Station to carry over when switching rooms: only the knob's own radio
 // moves along. Someone else's Spotify or TV stays where it is.

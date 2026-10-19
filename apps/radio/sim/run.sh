@@ -8,7 +8,7 @@ set -euo pipefail
 cd "$(dirname "$0")"
 build=../build/sim
 cmake -S . -B "$build" -DCMAKE_BUILD_TYPE=Release > /dev/null
-cmake --build "$build" -j 8 > /dev/null
+cmake --build "$build" -j 4 > /dev/null
 mkdir -p "$build/out"
 art="${1:-$build/art.jpg}"
 if [ ! -f "$art" ]; then

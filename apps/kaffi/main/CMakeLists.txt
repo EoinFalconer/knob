@@ -5,7 +5,14 @@ set(SRCS
     "kaffi/pending.cpp"
     "kaffi/ota.cpp"
     "ui/ui.cpp"
-    "ui/images/img_flame.cpp"
+    "ui/avatars.cpp"
+    "ui/standing.cpp"
+    "fonts/sf_regular_16.c"
+    "fonts/sf_regular_18.c"
+    "fonts/sf_regular_22.c"
+    "fonts/sf_medium_15.c"
+    "fonts/sf_semibold_28.c"
+    "fonts/sf_rounded_semibold_48.c"
 )
 
 set(INCLUDE_DIRS
@@ -40,3 +47,5 @@ target_compile_options(${COMPONENT_LIB} PUBLIC
     -fno-exceptions
     -fno-rtti
 )
+
+target_compile_definitions(${COMPONENT_LIB} PRIVATE LV_LVGL_H_INCLUDE_SIMPLE)

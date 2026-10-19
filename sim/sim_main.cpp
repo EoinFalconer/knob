@@ -1,11 +1,7 @@
-// Headless simulator: runs the real radio UI against LVGL with the firmware's
-// configuration, writes screenshots, and reports how much of the panel each
-// interaction repaints (the cost that matters on the ESP32-S3).
+// The simulated panel and finger (sim.h).
 #include "sim.h"
 
 #include "hal_pins.h"
-#include "sonos_config.h"
-#include "ui/ui.h"
 
 #include <algorithm>
 #include <chrono>
@@ -227,8 +223,6 @@ static void init_lvgl() {
   lv_indev_set_type(s_touch, LV_INDEV_TYPE_POINTER);
   lv_indev_set_read_cb(s_touch, touch_read_cb);
 }
-
-void sim_scenarios(const char *art_path);
 
 int main(int argc, char **argv) {
   const char *art = argc > 1 ? argv[1] : "art.jpg";

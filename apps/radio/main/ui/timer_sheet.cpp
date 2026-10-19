@@ -4,12 +4,13 @@
 #include "fonts.h"
 #include "hal_pins.h"
 #include "haptic.h"
+#include "motion.h"
+#include "primitives.h"
+#include "sheet.h"
 #include "sonos.h"
+#include "theme.h"
 #include "timer.h"
 #include "ui/lights_page.h"
-#include "ui/motion.h"
-#include "ui/primitives.h"
-#include "ui/sheet.h"
 #include "ui/timer_dial.h"
 
 #include <algorithm>
@@ -35,8 +36,6 @@ constexpr uint32_t TICK_SLIDE_MS = 180;
 // countdown then drains: the press visibly winds the timer up.
 constexpr uint32_t WIND_UP_MS = 420;
 
-constexpr uint32_t COL_ORANGE = 0xFF9F0A;
-constexpr uint32_t COL_RED = 0xFF453A; // Apple's system red, dark mode
 // Swiped down while running, the sheet is a cancel button: one big red
 // capsule, cut like Stop. A tap anywhere on the sheet takes it. The ring and
 // the countdown already show on the screen underneath, and a second ring
@@ -48,14 +47,11 @@ constexpr int CANCEL_Y = 14;
 constexpr int CANCEL_LEFT_GAP = 18; // caption to capsule
 constexpr lv_opa_t FILLED_OPA = LV_OPA_COVER;
 constexpr lv_opa_t FILLED_PRESSED_OPA = LV_OPA_80;
-constexpr lv_opa_t CAPSULE_OPA = 38;
-constexpr lv_opa_t CAPSULE_PRESSED_OPA = 70;
 constexpr int CAPSULE_H = 40;
 constexpr int RINGING_DIGITS_Y = -14;
 constexpr int ANSWER_Y = 66;
 constexpr int ANSWER_W = 92;
 constexpr int ANSWER_GAP = 12;
-constexpr int PILL_H = 30;
 constexpr int PILL_BOTTOM = 26;
 
 // The sheet has two pages side by side, the timer and the lights, swiped
@@ -610,17 +606,10 @@ const char *timer_caption() {
 }
 
 void timer_pill_create(lv_obj_t *parent) {
-  s_pill =
-      ui_icon_pill(parent, PILL_H, &lucide_18, ICON_TIMER, 0, &sf_medium_15);
+  s_pill = ui_pill(parent, ICON_TIMER);
   s_pill_seconds = -1;
   lv_obj_align(s_pill.pill, LV_ALIGN_BOTTOM_MID, 0, -PILL_BOTTOM);
-  lv_obj_set_style_bg_color(s_pill.pill, lv_color_white(), LV_PART_MAIN);
-  lv_obj_set_style_bg_opa(s_pill.pill, LV_OPA_10, LV_PART_MAIN);
-  lv_obj_set_style_bg_opa(
-      s_pill.pill, LV_OPA_20,
-      static_cast<lv_style_selector_t>(LV_PART_MAIN | LV_STATE_PRESSED));
-  for (lv_obj_t *o : {s_pill.icon, s_pill.label})
-    lv_obj_set_style_text_color(o, lv_color_hex(COL_ORANGE), LV_PART_MAIN);
+  ui_pill_tint(s_pill, lv_color_hex(COL_ORANGE), LV_OPA_COVER);
   lv_obj_add_flag(s_pill.pill, LV_OBJ_FLAG_CLICKABLE);
   lv_obj_add_event_cb(s_pill.pill, on_pill, LV_EVENT_SHORT_CLICKED, nullptr);
   // The pager rebuilds the page; forget the pill with it.

@@ -3,7 +3,7 @@
 #include "hal_pins.h"
 #include "ui/clock_art.h"
 #include "ui/face_palette.h"
-#include "ui/motion.h"
+#include "motion.h"
 
 #include <algorithm>
 

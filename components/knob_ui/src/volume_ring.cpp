@@ -1,8 +1,8 @@
-#include "ui/volume_ring.h"
+#include "volume_ring.h"
 #include "hal_pins.h"
-#include "ui/motion.h"
-#include "ui/primitives.h"
-#include "ui/ring_strips.h"
+#include "motion.h"
+#include "primitives.h"
+#include "ring_strips.h"
 
 #include "esp_heap_caps.h"
 
@@ -186,7 +186,10 @@ Geometry geometry(const Shape &s) {
 float cap_deg(float width) { return (width / 2.0f + 1.5f) / (R - width) * DEG; }
 
 // Where the ends moved from `a` to `b`, with their caps, when the width is the
-// same. Returns how many stretches it wrote.
+// same. Returns how many stretches it wrote. The ends are measured straight,
+// never the short way round: they stay within 135..405 degrees, and a level
+// can jump most of the span at once (a list wrapping from its last item to its
+// first), which the short way would cover backwards, leaving gaps.
 int moved_ends(const Shape &a, const Shape &b, Stretch out[3]) {
   Geometry ga = geometry(a), gb = geometry(b);
   float pad = cap_deg(gb.width);
@@ -194,7 +197,7 @@ int moved_ends(const Shape &a, const Shape &b, Stretch out[3]) {
   float ends_b[3] = {gb.start, gb.start + gb.span, gb.start + gb.level_span};
   int n = 0;
   for (int i = 0; i < 3; i++) {
-    float delta = wrap360(ends_b[i] - ends_a[i] + 180.0f) - 180.0f;
+    float delta = ends_b[i] - ends_a[i];
     if (delta == 0.0f && !(i == 2 && a.level != b.level))
       continue;
     float from = std::min(ends_a[i], ends_a[i] + delta);

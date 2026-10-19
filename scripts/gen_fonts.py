@@ -43,18 +43,28 @@ WEIGHTS = {
 
 TEXT = "0x20-0x7F,0xB0,0x2026,0x2013,0x2014,0x2018,0x2019,0x201C,0x201D,0xC5,0xD8,0xC6,0xE5,0xF8,0xE6"
 DIGITS = "0x30-0x3A"
+# Names, of people or rooms: all of Latin-1, and a real minus for balances.
+NAMES = "0x20-0x7E,0xA0-0xFF,0x2026,0x2013,0x2014,0x2018,0x2019,0x201C,0x201D,0x2212"
+INITIALS = "0x3F,0x41-0x5A,0xC0-0xDE"
+
+# What the shared components in components/knob_ui draw in (sheets, lists,
+# pills, captions): every app on them gets this same cut, so they look the
+# same everywhere.
+SHARED_FONTS = [
+    ("sf_regular_16", PRO, "regular", 16, NAMES, ()),
+    ("sf_regular_18", PRO, "regular", 18, NAMES, ()),
+    ("sf_regular_22", PRO, "regular", 22, NAMES, ()),
+    ("sf_medium_15", PRO, "medium", 15, NAMES, ()),
+    ("sf_semibold_28", PRO, "semibold", 28, NAMES, ()),
+]
 
 # name, family, weight, size, glyph range, OpenType features to bake in
 FONTS = {
-    "radio": [
-        ("sf_regular_16", PRO, "regular", 16, TEXT, ()),
-        ("sf_regular_18", PRO, "regular", 18, TEXT, ()),
-        ("sf_regular_22", PRO, "regular", 22, TEXT, ()),
+    "radio": SHARED_FONTS
+    + [
         ("sf_medium_13", PRO, "medium", 13, TEXT, ()),
-        ("sf_medium_15", PRO, "medium", 15, TEXT, ()),
         ("sf_semibold_16", PRO, "semibold", 16, TEXT, ()),
         ("sf_semibold_20", PRO, "semibold", 20, TEXT, ()),
-        ("sf_semibold_28", PRO, "semibold", 28, TEXT, ()),
         # Weather temperature and clock numerals: big, so rounded.
         (
             "sf_rounded_regular_132",
@@ -75,6 +85,11 @@ FONTS = {
         ("sf_rounded_semibold_84", ROUNDED, "semibold", 84, DIGITS, ("case",)),
         # The boot screen's KN / OB.
         ("sf_rounded_black_200", ROUNDED, "black", 200, "0x42,0x4B,0x4E,0x4F", ()),
+    ],
+    "kaffi": SHARED_FONTS
+    + [
+        # A person's initial on their tile while there's no photo.
+        ("sf_rounded_semibold_48", ROUNDED, "semibold", 48, INITIALS, ()),
     ],
     "calendar": [
         ("sf_regular_16", PRO, "regular", 16, TEXT, ()),
@@ -177,6 +192,7 @@ def main():
     force = "--force" in sys.argv
     for app, fonts in FONTS.items():
         out_dir = os.path.join(ROOT, "apps", app, "main", "fonts")
+        os.makedirs(out_dir, exist_ok=True)
         for name, family, weight, size, glyphs, features in fonts:
             out = os.path.join(out_dir, name + ".c")
             if os.path.exists(out) and not force:

@@ -22,14 +22,15 @@ fi
 # Host clang has no Xtensa backend, so approximate the target:
 # 1. -D__XTENSA__ keeps IDF headers on their xtensa branches (its absence
 #    routes them to riscv paths, and to GCC-only quote-include tricks).
-# 2. --target=i386: 32-bit pointers like xtensa, and xtensa inline-asm
+# 2. --target=i386 ELF: 32-bit pointers like xtensa, ELF sections like IDF's
+#    EXT_RAM_BSS_ATTR (Mach-O rejects their names), and xtensa inline-asm
 #    constraints like "a"/"=a" happen to be valid x86 constraints (asm bodies
 #    aren't assembled in syntax-only mode). On arm64 they'd be rejected.
 # 3. The xtensa toolchain's newlib/libstdc++ headers must win over the host
 #    SDK so libc types match the firmware's.
 EXTRA_ARGS+=(
     --extra-arg="-D__XTENSA__"
-    --extra-arg="--target=i386-apple-macosx"
+    --extra-arg="--target=i386-unknown-linux-gnu"
     --extra-arg="-fno-blocks"
     --extra-arg="-Wno-extern-c-compat"
 )

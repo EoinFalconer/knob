@@ -1,9 +1,9 @@
-#include "ui/carousel.h"
-#include "fonts.h"
+#include "carousel.h"
+
 #include "hal_pins.h"
+#include "motion.h"
+#include "primitives.h"
 #include "squircle.h"
-#include "ui/motion.h"
-#include "ui/primitives.h"
 
 // lv_draw_sw_transform is only declared in the software renderer's header.
 #include "src/draw/sw/lv_draw_sw.h"
@@ -15,8 +15,8 @@
 namespace {
 
 constexpr int TILES = 5; // the middle one and two each side, for the glide
-constexpr int32_t TILE = 120;
-constexpr int32_t SPACING = 160;
+// Tiles sit this far apart beyond their own width.
+constexpr int32_t GAP = 40;
 constexpr int32_t UNIT = 1000; // positions are in thousandths of a tile
 constexpr uint32_t GLIDE_MS = 280;
 constexpr uint32_t SPREAD_MS = 260;
@@ -29,7 +29,6 @@ constexpr int32_t SIDE_SCALE = 218; // about 85%
 // icon's shape when the tile gets it, and that scaled down when the tile is.
 struct Tile {
   lv_obj_t *box;
-  lv_obj_t *glyph;
   int32_t scale;
   int item;
   uint8_t *full_pixels;
@@ -40,6 +39,7 @@ struct Tile {
 };
 
 CarouselHooks s_hooks;
+int32_t s_tile = CAROUSEL_TILE; // the middle tile's size
 lv_obj_t *s_strip;
 Tile s_tiles[TILES];
 int s_count = 1;
@@ -48,6 +48,8 @@ int32_t s_target;    // unwrapped, a whole tile
 int32_t s_spread;    // how far the neighbors show, 0..UNIT
 void (*s_settled)(); // the callback for the open or close under way
 lv_timer_t *s_hide_timer;
+lv_obj_t *s_canvas; // draws a glyph into s_glyph_buf, never shown
+lv_draw_buf_t *s_glyph_buf;
 
 int wrap(int32_t i) { return ((i % s_count) + s_count) % s_count; }
 
@@ -56,16 +58,51 @@ int32_t nearest(int32_t pos) {
   return (shifted >= 0 ? shifted : shifted - UNIT + 1) / UNIT;
 }
 
+// A glyph goes into the tile's picture, so it shrinks and fades with the
+// tile instead of spilling over a smaller neighbor.
+const lv_image_dsc_t *glyph_picture(const char *glyph, lv_color_t color) {
+  if (!s_glyph_buf)
+    s_glyph_buf = lv_draw_buf_create(s_tile, s_tile, LV_COLOR_FORMAT_RGB565, 0);
+  if (!s_glyph_buf)
+    return nullptr;
+  if (!s_canvas) {
+    s_canvas = lv_canvas_create(s_strip);
+    lv_obj_add_flag(s_canvas, LV_OBJ_FLAG_HIDDEN);
+    lv_canvas_set_draw_buf(s_canvas, s_glyph_buf);
+  }
+  lv_canvas_fill_bg(s_canvas, color, LV_OPA_COVER);
+  lv_layer_t layer;
+  lv_canvas_init_layer(s_canvas, &layer);
+  lv_draw_label_dsc_t dsc;
+  lv_draw_label_dsc_init(&dsc);
+  dsc.text = glyph;
+  dsc.font = s_hooks.glyph_font;
+  dsc.color = lv_color_white();
+  dsc.opa = LV_OPA_50;
+  dsc.align = LV_TEXT_ALIGN_CENTER;
+  int32_t top = (s_tile - lv_font_get_line_height(dsc.font)) / 2;
+  lv_area_t area = {0, top, s_tile - 1, s_tile - 1};
+  lv_draw_label(&layer, &dsc, &area);
+  lv_canvas_finish_layer(s_canvas, &layer);
+  // The same buffer holds every glyph in turn.
+  lv_image_cache_drop(s_glyph_buf);
+  // A draw buffer starts like an image descriptor, which LVGL relies on too.
+  return reinterpret_cast<const lv_image_dsc_t *>(s_glyph_buf);
+}
+
 void fill(Tile &t, int item) {
   if (t.item == item)
     return;
   t.item = item;
   CarouselTile c = s_hooks.tile(item);
-  lv_obj_set_flag(t.glyph, LV_OBJ_FLAG_HIDDEN, c.image != nullptr);
+  const lv_image_dsc_t *picture = c.image;
+  if (!picture && c.glyph)
+    picture = glyph_picture(c.glyph, c.color);
   if (!t.full_pixels)
-    t.full_pixels = squircle_alloc(TILE);
+    t.full_pixels = squircle_alloc(s_tile);
   if (t.full_pixels)
-    squircle_bake(c.image, c.color, TILE, t.full_pixels, &t.full);
+    (c.round ? circle_bake : squircle_bake)(picture, c.color, s_tile,
+                                            t.full_pixels, &t.full);
   t.small_scale = 0;
   lv_obj_invalidate(t.box);
 }
@@ -90,7 +127,7 @@ void set_scale(Tile &t, int32_t distance) {
   if (scale == t.scale)
     return;
   t.scale = scale;
-  int32_t size = TILE * scale / FULL_SCALE;
+  int32_t size = s_tile * scale / FULL_SCALE;
   lv_obj_set_size(t.box, size, size);
   lv_obj_invalidate(t.box);
 }
@@ -101,17 +138,17 @@ const lv_image_dsc_t *small_picture(Tile &t, int32_t size) {
   if (t.small_scale == t.scale)
     return &t.small;
   if (!t.small_pixels)
-    t.small_pixels = squircle_alloc(TILE);
+    t.small_pixels = squircle_alloc(s_tile);
   if (!t.small_pixels)
     return nullptr;
   lv_draw_image_dsc_t how;
   lv_draw_image_dsc_init(&how);
   how.scale_x = how.scale_y = t.scale;
-  how.pivot = {TILE / 2, TILE / 2};
+  how.pivot = {s_tile / 2, s_tile / 2};
   how.antialias = 1;
-  int32_t at = (TILE - size) / 2;
+  int32_t at = (s_tile - size) / 2;
   lv_area_t out = {at, at, at + size - 1, at + size - 1};
-  lv_draw_sw_transform(&out, t.full.data, TILE, TILE,
+  lv_draw_sw_transform(&out, t.full.data, s_tile, s_tile,
                        static_cast<int32_t>(t.full.header.stride), &how,
                        nullptr, LV_COLOR_FORMAT_RGB565A8, t.small_pixels);
   // The decoder may keep what it last read from this descriptor.
@@ -151,7 +188,7 @@ void layout() {
     int32_t rel = k - TILES / 2;
     fill(t, wrap(base + rel));
     int32_t distance = rel * UNIT - offset;
-    lv_obj_set_style_translate_x(t.box, distance * SPACING / UNIT,
+    lv_obj_set_style_translate_x(t.box, distance * (s_tile + GAP) / UNIT,
                                  LV_PART_MAIN);
     lv_obj_set_style_opa(t.box, opacity(distance), LV_PART_MAIN);
     set_scale(t, distance);
@@ -203,6 +240,10 @@ void stop_all() {
 
 void on_strip_deleted(lv_event_t *) {
   stop_all();
+  s_canvas = nullptr; // went with the strip
+  lv_image_cache_drop(s_glyph_buf);
+  if (s_glyph_buf)
+    lv_draw_buf_destroy(std::exchange(s_glyph_buf, nullptr));
   for (Tile &t : s_tiles) {
     lv_image_cache_drop(&t.full);
     lv_image_cache_drop(&t.small);
@@ -215,14 +256,8 @@ void on_strip_deleted(lv_event_t *) {
 Tile make_tile(lv_obj_t *parent) {
   Tile t = {};
   t.box = ui_box(parent);
-  lv_obj_set_size(t.box, TILE, TILE);
+  lv_obj_set_size(t.box, s_tile, s_tile);
   lv_obj_center(t.box);
-  t.glyph = lv_label_create(t.box);
-  lv_obj_set_style_text_font(t.glyph, &lucide_48, LV_PART_MAIN);
-  lv_obj_set_style_text_color(t.glyph, lv_color_white(), LV_PART_MAIN);
-  lv_obj_set_style_text_opa(t.glyph, LV_OPA_50, LV_PART_MAIN);
-  lv_label_set_text(t.glyph, ICON_MUSIC);
-  lv_obj_center(t.glyph);
   t.scale = FULL_SCALE;
   t.item = -1;
   return t;
@@ -233,8 +268,9 @@ Tile make_tile(lv_obj_t *parent) {
 void carousel_create(lv_obj_t *parent, int32_t y, const CarouselHooks &hooks) {
   stop_all();
   s_hooks = hooks;
+  s_tile = hooks.size;
   s_strip = ui_box(parent);
-  lv_obj_set_size(s_strip, LCD_H_RES, TILE);
+  lv_obj_set_size(s_strip, LCD_H_RES, s_tile);
   lv_obj_align(s_strip, LV_ALIGN_CENTER, 0, y);
   lv_obj_add_flag(s_strip, LV_OBJ_FLAG_HIDDEN);
   // The pager rebuilds the page; nothing may move the old tiles after.
@@ -264,6 +300,23 @@ void carousel_open(int count, int item, void (*opened)()) {
 void carousel_turn(int steps) {
   s_target += steps * UNIT;
   start(&s_pos, anim_pos_cb, s_target, GLIDE_MS);
+}
+
+void carousel_reload(int count, int item) {
+  lv_anim_delete(&s_pos, anim_pos_cb);
+  s_count = std::max(count, 1);
+  s_pos = s_target = item * UNIT;
+  for (Tile &t : s_tiles)
+    t.item = -1;
+  layout();
+}
+
+void carousel_refresh(int item) {
+  for (Tile &t : s_tiles)
+    if (t.item == item) {
+      t.item = -1;
+      fill(t, item);
+    }
 }
 
 int carousel_item() { return wrap(s_target / UNIT); }

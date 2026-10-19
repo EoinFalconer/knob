@@ -1,6 +1,6 @@
 // Walks the radio UI through its states. Screenshots land in the output
 // directory; redraw cost per interaction prints to stdout.
-#include "sim.h"
+#include "radio_sim.h"
 
 #include "app_config.h"
 #include "discovery.h"
