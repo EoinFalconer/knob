@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Knob - Connecting...</title>
+<title>Knob - Spotify sign-in</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
@@ -15,7 +15,6 @@ p{color:#b3b3b3;font-size:.95em;margin-top:8px}
 a.btn{display:inline-block;padding:14px 32px;border-radius:24px;
 background:#1DB954;color:#fff;font-size:1em;font-weight:600;
 text-decoration:none;margin-top:20px}
-a.btn:hover{background:#1ed760}
 .error{color:#e74c3c}
 .ok{color:#1DB954}
 </style>
@@ -23,40 +22,74 @@ a.btn:hover{background:#1ed760}
 <body>
 <div class="wrap">
 <h1 id="title">Connecting your knob...</h1>
-<p id="status">Tap below to finish setup.</p>
+<p id="status"></p>
 <a class="btn" id="go-btn" href="#" style="display:none">Finish setup on device</a>
 </div>
 <script>
+// Spotify sign-in for the knob. The knob's QR code opens this page with
+// t (a one-time relay topic), c (its PKCE challenge) and id (the client ID).
+// We send the phone to Spotify, then post the returned code to
+// https://ntfy.sh/<t>, where the knob is polling. The knob holds the PKCE
+// verifier, so the code is useless to anyone else who sees it.
 (function(){
+  var RELAY = 'https://ntfy.sh/';
+  var SCOPES = 'user-read-playback-state user-modify-playback-state ' +
+               'user-read-currently-playing user-library-read';
   var p = new URLSearchParams(location.search);
-  var code = p.get('code');
-  var state = p.get('state');
+  var title = document.getElementById('title');
+  var status = document.getElementById('status');
+
+  function fail(msg) {
+    title.textContent = 'Sign-in failed';
+    status.innerHTML = '';
+    var s = document.createElement('span');
+    s.className = 'error';
+    s.textContent = msg;
+    status.appendChild(s);
+  }
+
+  var topic = p.get('t');
+  if (topic) {
+    if (!/^knob[0-9a-f]{16}$/.test(topic)) return fail('This QR code is not valid.');
+    var auth = new URLSearchParams({
+      client_id: p.get('id') || '',
+      response_type: 'code',
+      redirect_uri: location.origin + location.pathname,
+      scope: SCOPES,
+      code_challenge_method: 'S256',
+      code_challenge: p.get('c') || '',
+      state: topic
+    });
+    title.textContent = 'Opening Spotify...';
+    location.replace('https://accounts.spotify.com/authorize?' + auth);
+    return;
+  }
+
   var error = p.get('error');
+  if (error) return fail('Spotify said: ' + error);
 
-  if (error) {
-    document.getElementById('title').textContent = 'Auth failed';
-    document.getElementById('status').innerHTML =
-      '<span class="error">Spotify error: ' + error + '</span>';
+  var code = p.get('code');
+  var state = p.get('state') || '';
+  if (!code || !state) return fail('Missing sign-in code. Scan the QR code on your knob again.');
+
+  if (/^knob[0-9a-f]{16}$/.test(state)) {
+    status.textContent = 'Sending sign-in to your knob...';
+    fetch(RELAY + state, {method: 'POST', body: code})
+      .then(function(r) {
+        if (!r.ok) throw new Error('relay ' + r.status);
+        history.replaceState(null, '', location.pathname);
+        title.innerHTML = '<span class="ok">Signed in</span>';
+        status.textContent = 'Your knob will connect in a few seconds. You can close this page.';
+      })
+      .catch(function(e) { fail('Could not reach your knob (' + e.message + '). Try again.'); });
     return;
   }
 
-  if (!code || !state) {
-    document.getElementById('title').textContent = 'Error';
-    document.getElementById('status').innerHTML =
-      '<span class="error">Missing auth code or device address.</span>';
-    return;
-  }
-
-  var deviceUrl = 'http://' + state + ':8888/callback?code=' + encodeURIComponent(code);
-
-  // Show a button — auto-redirect from HTTPS to HTTP is blocked by some browsers
+  // Older firmware: state is the knob's IP and the phone talks to it directly.
   var btn = document.getElementById('go-btn');
-  btn.href = deviceUrl;
+  btn.href = 'http://' + state + ':8888/callback?code=' + encodeURIComponent(code);
   btn.style.display = 'inline-block';
-  document.getElementById('status').textContent =
-    'Authorized! Tap the button to send the token to your knob.';
-
-  // No auto-redirect — HTTPS→HTTP is blocked by most mobile browsers
+  status.textContent = 'Authorized! Tap the button to send the token to your knob.';
 })();
 </script>
 </body>
