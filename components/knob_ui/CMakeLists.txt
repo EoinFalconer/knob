@@ -7,6 +7,7 @@ set(srcs
     "src/lucide_22.c"
     "src/primitives.cpp"
     "src/pill.cpp"
+    "src/toast.cpp"
     "src/activity.cpp"
     "src/volume_ring.cpp"
     "src/carousel.cpp"

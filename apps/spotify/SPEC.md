@@ -69,15 +69,14 @@ apps/spotify/
   main/
     main.cpp              — boot, event wiring, cmd_task queue
     app_config.h          — event IDs, SpotifyState struct, timing constants
-    wifi_picker.cpp/h     — on-device WiFi network picker (scan, list, select)
-    wifi_setup.cpp/h      — captive portal for adding new WiFi networks
+    knob_net/knob_setup   — saved-network connection and captive-portal setup
     spotify_setup.cpp/h   — on-device Spotify OAuth setup (PKCE, QR code)
     spotify/
       json_parse.cpp/h    — shared JSON parser and HTTP response accumulator
       spotify_api.cpp/h   — HTTP client for Spotify Web API + polling task
       spotify_auth.cpp/h  — OAuth token refresh + NVS persistence
     ui/
-      ui.cpp/h            — LVGL screen layout, encoder/touch handling, animations
+      ui.cpp/h            — Spotify state and controls composed from shared knob_ui parts
 ```
 
 ### Command Task Pattern
@@ -93,14 +92,14 @@ spotify_api poll_task -> esp_event(STATE_UPDATE) -> ui_update_state
 - `knob_hal` — display, touch, encoder, haptic
 - `knob_net` — WiFi, event bus
 - `knob_storage` — NVS
-- `knob_ui` — fonts, art decoder
+- `knob_ui` — theme, typography, backdrop, caption/pill, volume ring, motion,
+  album-art decoding and tint
 
 ## UI States
 
 | State           | Display                                   | Encoder              | Touch                     |
 |-----------------|-------------------------------------------|----------------------|---------------------------|
 | Splash          | Pulsing logo + spinning ring + tagline    | —                    | —                         |
-| WiFi picker     | Scrollable network list                   | Scroll list          | Tap: select network       |
 | WiFi setup      | QR code for captive portal                | —                    | —                         |
 | Spotify setup   | QR code for OAuth                         | —                    | —                         |
 | Connecting      | Spotify logo + status text                | —                    | —                         |

@@ -12,19 +12,21 @@ void spotify_api_start();
 void spotify_api_stop();
 
 /// Set volume on the active Spotify device (0-100).
-void spotify_api_set_volume(int volume);
+int spotify_api_set_volume(int volume);
 
 /// Toggle play/pause.
-void spotify_api_play_pause(bool currently_playing);
+int spotify_api_play_pause(bool currently_playing);
 
 /// Skip to next track.
-void spotify_api_next();
+int spotify_api_next();
 
 /// Skip to previous track.
-void spotify_api_prev();
+int spotify_api_prev();
 
 /// Seek to position in current track (milliseconds).
-void spotify_api_seek(int position_ms);
+int spotify_api_seek(int position_ms);
+
+int spotify_api_transfer(const char *device_id);
 
 /// Play a random liked song (DJ spin feature).
 void spotify_api_play_random_liked();

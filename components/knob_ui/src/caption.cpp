@@ -11,6 +11,17 @@ namespace {
 constexpr int MARQUEE_DELAY_MS = 2500;
 constexpr int MARQUEE_PX_PER_S = 30;
 constexpr int TITLE_W = LCD_H_RES - 80;
+// Widest a line can be at `row` (its centre, below the screen's centre)
+// and still clear the ring by CAPTION_MARGIN at its lower corners.
+constexpr int CAPTION_MARGIN = 24; // ring width plus breathing room
+constexpr int line_w(int row, int half_height) {
+  int r = LCD_H_RES / 2 - CAPTION_MARGIN;
+  int y = row + half_height;
+  int w = 0;
+  while ((w + 1) * (w + 1) + y * y <= r * r)
+    w++;
+  return 2 * w;
+}
 
 void rest_truncated(lv_anim_t *a) {
   auto *label = static_cast<lv_obj_t *>(a->var);
@@ -56,10 +67,15 @@ Caption ui_caption(lv_obj_t *parent) {
   scroll_once(c.title);
 
   c.subtitle = make_line(parent, &sf_regular_16, CAPTION_SUBTITLE_Y);
+  lv_obj_set_width(c.subtitle, line_w(CAPTION_SUBTITLE_Y, 10));
+  lv_obj_set_style_text_align(c.subtitle, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
   lv_obj_set_style_text_opa(c.subtitle, TEXT_OPA_SECONDARY, LV_PART_MAIN);
   scroll_once(c.subtitle);
 
   c.detail = make_line(parent, &sf_regular_16, CAPTION_DETAIL_Y);
+  lv_obj_set_width(c.detail, line_w(CAPTION_DETAIL_Y, 10));
+  lv_obj_set_style_text_align(c.detail, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
+  lv_label_set_long_mode(c.detail, LV_LABEL_LONG_DOT);
   lv_obj_set_style_text_color(c.detail, lv_color_hex(COL_CAPTION_DETAIL),
                               LV_PART_MAIN);
   return c;

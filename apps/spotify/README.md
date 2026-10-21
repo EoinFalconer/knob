@@ -62,8 +62,8 @@ The backlight dims after 15 seconds of inactivity and restores on any input.
 
 ## Boot Flow
 
-1. **Splash screen** — Spotify logo zooms in with a spinning green ring and "every knob deserves music" tagline
-2. **WiFi picker** — scans for networks, shows a scrollable list. Saved networks are marked green. Tap to select, or tap "+ Add new network" to open the captive portal
+1. **Splash screen** — shared activity treatment with Spotify status
+2. **WiFi** — automatically joins the saved network. With no saved or compiled-in credentials, a QR code opens the captive portal for provisioning
 3. **Spotify auth** — if no token is stored, shows a QR code for on-device OAuth setup
 4. **Now playing** — connects to Spotify and shows current playback
 

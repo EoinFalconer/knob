@@ -12,6 +12,20 @@ enum : int32_t {
     APP_EVENT_SPOTIFY_PREV         = 405, // no data
     APP_EVENT_SPOTIFY_DJ_SPIN      = 406, // no data — random liked song
     APP_EVENT_SPOTIFY_SEEK         = 407, // data: int32_t (position_ms)
+    APP_EVENT_SPOTIFY_TRANSFER     = 408, // data: SpotifyTransfer
+    APP_EVENT_SPOTIFY_CONTROL_RESULT = 409, // data: SpotifyControlResult
+    APP_EVENT_SPOTIFY_POLL_STATUS  = 410, // data: int32_t HTTP status
+};
+
+struct SpotifyTransfer {
+    char device_id[128];
+    char device_name[64];
+};
+
+struct SpotifyControlResult {
+    int32_t event_id;
+    int32_t status;
+    char device_name[64];
 };
 
 // ─── Playback state from Spotify API
@@ -24,6 +38,16 @@ struct SpotifyState {
     bool is_playing;
     int  progress_ms;
     int  duration_ms;
+    char last_track[128];
+    char last_artist[128];
+    char last_art_url[256];
+    char last_uri[128];
+    char next_track[128];
+    char next_artist[128];
+    char next_art_url[256];
+    char device_name[64];
+    char device_id[128];
+    bool has_device;
 };
 
 // ─── Task config

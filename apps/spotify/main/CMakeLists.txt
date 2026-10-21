@@ -1,14 +1,16 @@
 set(SRCS
     "main.cpp"
-    "wifi_picker.cpp"
     "spotify_setup.cpp"
     "spotify/json_parse.cpp"
     "spotify/spotify_auth.cpp"
     "spotify/spotify_api.cpp"
     "ui/ui.cpp"
     "fonts/sf_regular_16.c"
+    "fonts/sf_regular_18.c"
     "fonts/sf_regular_22.c"
+    "fonts/sf_medium_15.c"
     "fonts/sf_semibold_28.c"
+    "fonts/lucide_48.c"
     "ui/images/spotify_logo_32.c"
     "ui/images/spotify_logo_64.c"
 )

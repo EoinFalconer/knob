@@ -43,8 +43,8 @@ extern const lv_font_t lucide_weather_20;
 #define ICON_CHEVRON_LEFT "\xEE\x81\xAE"  // U+E06E
 #define ICON_CHEVRON_RIGHT "\xEE\x81\xAF" // U+E06F
 #define ICON_CHEVRON_UP "\xEE\x81\xB0"    // U+E070
-#define ICON_PAUSE "\xEE\x84\xAE"         // U+E12E
-#define ICON_PLAY "\xEE\x84\xBC"          // U+E13C
+#define ICON_PAUSE "\xEE\x84\xAE"         // U+E12E, also in lucide_18
+#define ICON_PLAY "\xEE\x84\xBC"          // U+E13C, also in lucide_18
 #define ICON_REFRESH "\xEE\x85\x85"       // U+E145
 #define ICON_SKIP_BACK "\xEE\x85\x9F"     // U+E15F
 #define ICON_SKIP_FORWARD "\xEE\x85\xA0"  // U+E160

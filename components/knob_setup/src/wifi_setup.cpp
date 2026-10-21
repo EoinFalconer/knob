@@ -22,6 +22,19 @@ static volatile bool s_setup_done = false;
 static httpd_handle_t s_setup_server = nullptr;
 static char s_ap_name[33] = "knob";
 
+enum class SetupState {
+  IDLE,
+  CONNECTING,
+  CONNECTED,
+  FAILED,
+};
+
+static portMUX_TYPE s_status_lock = portMUX_INITIALIZER_UNLOCKED;
+static SetupState s_setup_state = SetupState::IDLE;
+static char s_setup_error[96] = {};
+static char s_pending_ssid[65] = {};
+static char s_pending_pass[65] = {};
+
 static void configure_ap(wifi_config_t *cfg) {
   *cfg = {};
   strncpy(reinterpret_cast<char *>(cfg->ap.ssid), s_ap_name,
@@ -38,10 +51,39 @@ static const int WIFI_CONNECTED_BIT = BIT0;
 static const int WIFI_FAIL_BIT = BIT1;
 static esp_event_handler_instance_t s_wifi_handler_instance = nullptr;
 static esp_event_handler_instance_t s_ip_handler_instance = nullptr;
+static volatile uint8_t s_disconnect_reason = 0;
+
+static void set_setup_status(SetupState state, const char *error = nullptr) {
+  portENTER_CRITICAL(&s_status_lock);
+  s_setup_state = state;
+  if (error) {
+    strncpy(s_setup_error, error, sizeof(s_setup_error) - 1);
+    s_setup_error[sizeof(s_setup_error) - 1] = '\0';
+  } else {
+    s_setup_error[0] = '\0';
+  }
+  portEXIT_CRITICAL(&s_status_lock);
+}
+
+static const char *disconnect_error(uint8_t reason) {
+  switch (reason) {
+  case 2:
+  case 15:
+  case 202:
+  case 204:
+    return "Wrong password or WiFi authentication failed.";
+  case 201:
+    return "Network not found. Move the knob closer and try again.";
+  default:
+    return "Could not connect to WiFi. Check the network and try again.";
+  }
+}
 
 static void wifi_verify_event_handler(void *arg, esp_event_base_t event_base,
                                       int32_t event_id, void *event_data) {
   if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
+    auto *event = static_cast<wifi_event_sta_disconnected_t *>(event_data);
+    s_disconnect_reason = event->reason;
     xEventGroupSetBits(s_wifi_event_group, WIFI_FAIL_BIT);
   } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
     xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
@@ -173,26 +215,74 @@ function doConnect(){
  var btn=document.getElementById('btn');
  btn.disabled=true;
  btn.textContent='Connecting...';
- document.getElementById('status').innerHTML='<span class="spinner"></span>Saving...';
+ document.getElementById('status').innerHTML='<span class="spinner"></span>Connecting...';
  document.getElementById('status').className='status';
  fetch('/connect',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},
   body:'ssid='+encodeURIComponent(ssid)+'&pass='+encodeURIComponent(pass)
  }).then(r=>r.json()).then(d=>{
   if(d.ok){
-   document.getElementById('status').textContent='Your knob is connected! Restarting...';
-   document.getElementById('status').className='status ok';
+   pollStatus();
   }else{
    document.getElementById('status').textContent='Error: '+(d.error||'unknown');
    document.getElementById('status').className='status error';
-   btn.disabled=false;btn.textContent='Connect';
+   btn.disabled=false;
+   btn.textContent='Connect';
   }
  }).catch(()=>{
   document.getElementById('status').textContent='Connection error';
   document.getElementById('status').className='status error';
-  btn.disabled=false;btn.textContent='Connect';
+  btn.disabled=false;
+  btn.textContent='Connect';
  });
 }
-scan();
+function pollStatus(){
+ fetch('/status').then(r=>r.json()).then(d=>{
+  var status=document.getElementById('status');
+  var btn=document.getElementById('btn');
+  if(d.state==='connected'){
+   status.textContent='Connected \u2014 the knob will continue';
+   status.className='status ok';
+   return;
+  }
+  if(d.state==='failed'){
+   status.textContent=d.error||'Could not connect to WiFi';
+   status.className='status error';
+   btn.disabled=false;
+   btn.textContent='Retry';
+   return;
+  }
+  status.innerHTML='<span class="spinner"></span>Connecting...';
+  status.className='status';
+  setTimeout(pollStatus,750);
+ }).catch(()=>{
+  setTimeout(pollStatus,1000);
+ });
+}
+function initialize(){
+ fetch('/status').then(r=>r.json()).then(d=>{
+  if(d.state==='connecting'){
+   document.getElementById('btn').disabled=true;
+   document.getElementById('btn').textContent='Connecting...';
+   pollStatus();
+   return;
+  }
+  if(d.state==='connected'){
+   document.getElementById('btn').disabled=true;
+   document.getElementById('status').textContent='Connected \u2014 the knob will continue';
+   document.getElementById('status').className='status ok';
+   return;
+  }
+  if(d.state==='failed'){
+   document.getElementById('status').textContent=d.error||'Could not connect to WiFi';
+   document.getElementById('status').className='status error';
+   document.getElementById('btn').textContent='Retry';
+  }
+  scan();
+ }).catch(()=>{
+  setTimeout(initialize,1000);
+ });
+}
+initialize();
 </script>
 </body>
 </html>
@@ -413,6 +503,123 @@ static esp_err_t handle_scan(httpd_req_t *req) {
   return ESP_OK;
 }
 
+static void wifi_verify_task(void *) {
+  s_wifi_event_group = xEventGroupCreate();
+  if (!s_wifi_event_group) {
+    set_setup_status(SetupState::FAILED,
+                     "Could not start WiFi verification. Try again.");
+    vTaskDelete(nullptr);
+    return;
+  }
+
+  s_disconnect_reason = 0;
+  esp_err_t wifi_handler_err = esp_event_handler_instance_register(
+      WIFI_EVENT, WIFI_EVENT_STA_DISCONNECTED, &wifi_verify_event_handler,
+      nullptr, &s_wifi_handler_instance);
+  esp_err_t ip_handler_err = esp_event_handler_instance_register(
+      IP_EVENT, IP_EVENT_STA_GOT_IP, &wifi_verify_event_handler, nullptr,
+      &s_ip_handler_instance);
+  if (wifi_handler_err != ESP_OK || ip_handler_err != ESP_OK) {
+    if (wifi_handler_err == ESP_OK) {
+      esp_event_handler_instance_unregister(
+          WIFI_EVENT, WIFI_EVENT_STA_DISCONNECTED, s_wifi_handler_instance);
+    }
+    if (ip_handler_err == ESP_OK) {
+      esp_event_handler_instance_unregister(IP_EVENT, IP_EVENT_STA_GOT_IP,
+                                            s_ip_handler_instance);
+    }
+    vEventGroupDelete(s_wifi_event_group);
+    s_wifi_event_group = nullptr;
+    set_setup_status(SetupState::FAILED,
+                     "Could not start WiFi verification. Try again.");
+    vTaskDelete(nullptr);
+    return;
+  }
+
+  wifi_config_t sta_cfg = {};
+  strncpy(reinterpret_cast<char *>(sta_cfg.sta.ssid), s_pending_ssid,
+          sizeof(sta_cfg.sta.ssid) - 1);
+  strncpy(reinterpret_cast<char *>(sta_cfg.sta.password), s_pending_pass,
+          sizeof(sta_cfg.sta.password) - 1);
+
+  esp_err_t config_err = esp_wifi_set_config(WIFI_IF_STA, &sta_cfg);
+  esp_err_t connect_err = ESP_OK;
+  if (config_err == ESP_OK) {
+    connect_err = esp_wifi_connect();
+  }
+
+  EventBits_t bits = 0;
+  if (config_err == ESP_OK && connect_err == ESP_OK) {
+    bits = xEventGroupWaitBits(
+        s_wifi_event_group, WIFI_CONNECTED_BIT | WIFI_FAIL_BIT, pdFALSE,
+        pdFALSE, pdMS_TO_TICKS(10000));
+  }
+
+  esp_event_handler_instance_unregister(WIFI_EVENT,
+                                        WIFI_EVENT_STA_DISCONNECTED,
+                                        s_wifi_handler_instance);
+  esp_event_handler_instance_unregister(IP_EVENT, IP_EVENT_STA_GOT_IP,
+                                        s_ip_handler_instance);
+  vEventGroupDelete(s_wifi_event_group);
+  s_wifi_event_group = nullptr;
+
+  if (bits & WIFI_CONNECTED_BIT) {
+    ESP_LOGI(TAG, "WiFi credentials verified successfully");
+    settings_wifi_save(s_pending_ssid, s_pending_pass);
+    set_setup_status(SetupState::CONNECTED);
+    vTaskDelay(pdMS_TO_TICKS(3000));
+    s_setup_done = true;
+    vTaskDelete(nullptr);
+    return;
+  }
+
+  esp_wifi_disconnect();
+  if (bits & WIFI_FAIL_BIT) {
+    uint8_t reason = s_disconnect_reason;
+    ESP_LOGW(TAG, "WiFi connection failed, reason=%u", reason);
+    set_setup_status(SetupState::FAILED, disconnect_error(reason));
+  } else if (config_err != ESP_OK || connect_err != ESP_OK) {
+    ESP_LOGW(TAG, "WiFi connection could not start: config=%s connect=%s",
+             esp_err_to_name(config_err), esp_err_to_name(connect_err));
+    set_setup_status(SetupState::FAILED,
+                     "Could not start the WiFi connection. Try again.");
+  } else {
+    ESP_LOGW(TAG, "WiFi connection timed out");
+    set_setup_status(SetupState::FAILED,
+                     "Connection timed out. Move closer and try again.");
+  }
+
+  vTaskDelete(nullptr);
+}
+
+static esp_err_t handle_status(httpd_req_t *req) {
+  SetupState state;
+  char error[sizeof(s_setup_error)];
+  portENTER_CRITICAL(&s_status_lock);
+  state = s_setup_state;
+  memcpy(error, s_setup_error, sizeof(error));
+  portEXIT_CRITICAL(&s_status_lock);
+
+  const char *state_name = "idle";
+  if (state == SetupState::CONNECTING) {
+    state_name = "connecting";
+  } else if (state == SetupState::CONNECTED) {
+    state_name = "connected";
+  } else if (state == SetupState::FAILED) {
+    state_name = "failed";
+  }
+
+  char escaped_error[sizeof(error) * 2];
+  json_escape(error, escaped_error, sizeof(escaped_error));
+  char response[256];
+  snprintf(response, sizeof(response),
+           "{\"state\":\"%s\",\"error\":\"%s\"}", state_name,
+           escaped_error);
+  httpd_resp_set_type(req, "application/json");
+  httpd_resp_sendstr(req, response);
+  return ESP_OK;
+}
+
 static esp_err_t handle_connect(httpd_req_t *req) {
   char body[256] = {};
   int recv_len = httpd_req_recv(req, body, sizeof(body) - 1);
@@ -460,77 +667,36 @@ static esp_err_t handle_connect(httpd_req_t *req) {
     return ESP_OK;
   }
 
-  ESP_LOGI(TAG, "Saving WiFi: SSID=%s", ssid);
-  settings_wifi_save(ssid, pass);
-
-  // ─── Verify credentials before responding ───
-  // Stop current AP/STA, switch to STA, and try to connect.
-  ESP_LOGI(TAG, "Verifying WiFi credentials...");
-
-  s_wifi_event_group = xEventGroupCreate();
-
-  // Register temporary event handlers for verification
-  esp_event_handler_instance_register(WIFI_EVENT, WIFI_EVENT_STA_DISCONNECTED,
-                                      &wifi_verify_event_handler, nullptr,
-                                      &s_wifi_handler_instance);
-  esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_GOT_IP,
-                                      &wifi_verify_event_handler, nullptr,
-                                      &s_ip_handler_instance);
-
-  esp_wifi_stop();
-
-  // Create STA netif if needed (picker may have already created it)
-  if (!esp_netif_get_handle_from_ifkey("WIFI_STA_DEF")) {
-    esp_netif_create_default_wifi_sta();
-  }
-
-  ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
-
-  wifi_config_t sta_cfg = {};
-  strncpy((char *)sta_cfg.sta.ssid, ssid, sizeof(sta_cfg.sta.ssid) - 1);
-  strncpy((char *)sta_cfg.sta.password, pass, sizeof(sta_cfg.sta.password) - 1);
-  ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &sta_cfg));
-  ESP_ERROR_CHECK(esp_wifi_start());
-  esp_wifi_connect();
-
-  // Wait up to 10 seconds for connection or failure
-  EventBits_t bits = xEventGroupWaitBits(
-      s_wifi_event_group, WIFI_CONNECTED_BIT | WIFI_FAIL_BIT, pdFALSE, pdFALSE,
-      pdMS_TO_TICKS(10000));
-
-  // Unregister verification handlers
-  esp_event_handler_instance_unregister(WIFI_EVENT, WIFI_EVENT_STA_DISCONNECTED,
-                                        s_wifi_handler_instance);
-  esp_event_handler_instance_unregister(IP_EVENT, IP_EVENT_STA_GOT_IP,
-                                        s_ip_handler_instance);
-  vEventGroupDelete(s_wifi_event_group);
-  s_wifi_event_group = nullptr;
-
-  if (bits & WIFI_CONNECTED_BIT) {
-    // Connection succeeded — respond OK and signal setup complete
-    ESP_LOGI(TAG, "WiFi credentials verified successfully");
+  portENTER_CRITICAL(&s_status_lock);
+  bool busy = s_setup_state == SetupState::CONNECTING ||
+              s_setup_state == SetupState::CONNECTED;
+  portEXIT_CRITICAL(&s_status_lock);
+  if (busy) {
     httpd_resp_set_type(req, "application/json");
-    httpd_resp_sendstr(req, "{\"ok\":true}");
-
-    // Signal wifi_setup_start() to return instead of restarting
-    s_setup_done = true;
+    httpd_resp_sendstr(req,
+                       "{\"ok\":false,\"error\":\"Connection already in progress\"}");
     return ESP_OK;
   }
 
-  // Connection failed — switch back to AP mode so user can retry
-  ESP_LOGW(TAG, "WiFi connection failed — reverting to AP mode");
-  esp_wifi_stop();
+  strncpy(s_pending_ssid, ssid, sizeof(s_pending_ssid) - 1);
+  s_pending_ssid[sizeof(s_pending_ssid) - 1] = '\0';
+  strncpy(s_pending_pass, pass, sizeof(s_pending_pass) - 1);
+  s_pending_pass[sizeof(s_pending_pass) - 1] = '\0';
+  set_setup_status(SetupState::CONNECTING);
 
-  wifi_config_t ap_cfg;
-  configure_ap(&ap_cfg);
-
-  ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_APSTA));
-  ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &ap_cfg));
-  ESP_ERROR_CHECK(esp_wifi_start());
+  BaseType_t created = xTaskCreate(
+      wifi_verify_task, "wifi_verify", 4096, nullptr, 5, nullptr);
+  if (created != pdPASS) {
+    set_setup_status(SetupState::FAILED,
+                     "Could not start WiFi verification. Try again.");
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req,
+                       "{\"ok\":false,\"error\":\"Could not start verification\"}");
+    return ESP_OK;
+  }
 
   httpd_resp_set_type(req, "application/json");
-  httpd_resp_sendstr(req, "{\"ok\":false,\"error\":\"Could not connect to "
-                          "WiFi. Check your password.\"}");
+  httpd_resp_sendstr(req, "{\"ok\":true,\"state\":\"connecting\"}");
   return ESP_OK;
 }
 
@@ -573,6 +739,9 @@ void wifi_setup_start(const char *ap_name) {
   if (!esp_netif_get_handle_from_ifkey("WIFI_AP_DEF")) {
     esp_netif_create_default_wifi_ap();
   }
+  if (!esp_netif_get_handle_from_ifkey("WIFI_STA_DEF")) {
+    esp_netif_create_default_wifi_sta();
+  }
 
   wifi_config_t ap_cfg;
   configure_ap(&ap_cfg);
@@ -589,6 +758,7 @@ void wifi_setup_start(const char *ap_name) {
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_APSTA));
   }
 
+  ESP_ERROR_CHECK(esp_wifi_set_storage(WIFI_STORAGE_RAM));
   ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &ap_cfg));
   ESP_ERROR_CHECK(esp_wifi_start());
 
@@ -607,7 +777,7 @@ void wifi_setup_start(const char *ap_name) {
       "/connecttest.txt",     // Windows
       "/redirect",            // Windows
   };
-  constexpr int FIXED_ROUTES = 3; // "/", "/scan", "/connect"
+  constexpr int FIXED_ROUTES = 4; // "/", "/scan", "/connect", "/status"
 
   httpd_config_t http_cfg = HTTPD_DEFAULT_CONFIG();
   // Sized from the route list — a fixed 8 was one short, so the last probe
@@ -622,6 +792,7 @@ void wifi_setup_start(const char *ap_name) {
   http_cfg.send_wait_timeout = 10;
 
   s_setup_done = false;
+  set_setup_status(SetupState::IDLE);
   s_setup_server = nullptr;
   ESP_ERROR_CHECK(httpd_start(&s_setup_server, &http_cfg));
   httpd_handle_t server = s_setup_server;
@@ -653,6 +824,14 @@ void wifi_setup_start(const char *ap_name) {
   };
   httpd_register_uri_handler(server, &uri_connect);
 
+  const httpd_uri_t uri_status = {
+      .uri = "/status",
+      .method = HTTP_GET,
+      .handler = handle_status,
+      .user_ctx = nullptr,
+  };
+  httpd_register_uri_handler(server, &uri_status);
+
   for (const auto &ruri : redirect_uris) {
     httpd_uri_t rd = {
         .uri = ruri,
@@ -677,4 +856,5 @@ void wifi_setup_start(const char *ap_name) {
   httpd_stop(s_setup_server);
   s_setup_server = nullptr;
   esp_wifi_stop();
+  esp_wifi_deinit();
 }

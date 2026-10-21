@@ -46,12 +46,20 @@ int s_count = 1;
 int32_t s_pos;       // unwrapped: whole tiles times UNIT, between them too
 int32_t s_target;    // unwrapped, a whole tile
 int32_t s_spread;    // how far the neighbors show, 0..UNIT
+int32_t s_drag_origin;
 void (*s_settled)(); // the callback for the open or close under way
 lv_timer_t *s_hide_timer;
 lv_obj_t *s_canvas; // draws a glyph into s_glyph_buf, never shown
 lv_draw_buf_t *s_glyph_buf;
+int s_crossfade_count;
+int s_crossfade_item;
+uint32_t s_crossfade_ms;
 
-int wrap(int32_t i) { return ((i % s_count) + s_count) % s_count; }
+int wrap(int32_t i) {
+  if (!s_hooks.wrap)
+    return std::clamp<int32_t>(i, 0, s_count - 1);
+  return ((i % s_count) + s_count) % s_count;
+}
 
 int32_t nearest(int32_t pos) {
   int32_t shifted = pos + UNIT / 2;
@@ -91,10 +99,21 @@ const lv_image_dsc_t *glyph_picture(const char *glyph, lv_color_t color) {
 }
 
 void fill(Tile &t, int item) {
+  if (!s_hooks.wrap && (item < 0 || item >= s_count)) {
+    t.item = item;
+    t.full.data = nullptr;
+    lv_obj_invalidate(t.box);
+    return;
+  }
   if (t.item == item)
     return;
   t.item = item;
   CarouselTile c = s_hooks.tile(item);
+  if (!c.visible) {
+    t.full.data = nullptr;
+    lv_obj_invalidate(t.box);
+    return;
+  }
   const lv_image_dsc_t *picture = c.image;
   if (!picture && c.glyph)
     picture = glyph_picture(c.glyph, c.color);
@@ -123,7 +142,9 @@ lv_opa_t opacity(int32_t distance) {
 // the middle it's full size, so the picture there is a plain copy.
 void set_scale(Tile &t, int32_t distance) {
   int32_t d = std::min<int32_t>(std::abs(distance), UNIT);
-  int32_t scale = FULL_SCALE - (FULL_SCALE - SIDE_SCALE) * d / UNIT;
+  int32_t scale = s_hooks.scale_sides
+                      ? FULL_SCALE - (FULL_SCALE - SIDE_SCALE) * d / UNIT
+                      : FULL_SCALE;
   if (scale == t.scale)
     return;
   t.scale = scale;
@@ -186,7 +207,7 @@ void layout() {
   for (int k = 0; k < TILES; k++) {
     Tile &t = s_tiles[k];
     int32_t rel = k - TILES / 2;
-    fill(t, wrap(base + rel));
+    fill(t, s_hooks.wrap ? wrap(base + rel) : base + rel);
     int32_t distance = rel * UNIT - offset;
     lv_obj_set_style_translate_x(t.box, distance * (s_tile + GAP) / UNIT,
                                  LV_PART_MAIN);
@@ -204,6 +225,10 @@ void anim_pos_cb(void *, int32_t v) {
 void anim_spread_cb(void *, int32_t v) {
   s_spread = v;
   layout();
+}
+
+void anim_strip_opa_cb(void *, int32_t v) {
+  lv_obj_set_style_opa(s_strip, static_cast<lv_opa_t>(v), LV_PART_MAIN);
 }
 
 void start(int32_t *var, lv_anim_exec_xcb_t cb, int32_t to, uint32_t ms,
@@ -234,6 +259,8 @@ void closed(lv_anim_t *) {
 void stop_all() {
   lv_anim_delete(&s_pos, anim_pos_cb);
   lv_anim_delete(&s_spread, anim_spread_cb);
+  if (s_strip)
+    lv_anim_delete(s_strip, anim_strip_opa_cb);
   if (s_hide_timer)
     lv_timer_delete(std::exchange(s_hide_timer, nullptr));
 }
@@ -251,6 +278,7 @@ void on_strip_deleted(lv_event_t *) {
     squircle_free(std::exchange(t.small_pixels, nullptr));
     t.full = t.small = {};
   }
+  s_strip = nullptr;
 }
 
 Tile make_tile(lv_obj_t *parent) {
@@ -288,10 +316,12 @@ void carousel_open(int count, int item, void (*opened)()) {
   s_count = std::max(count, 1);
   s_settled = opened;
   s_pos = s_target = item * UNIT;
+  s_drag_origin = s_target;
   s_spread = 0;
   for (Tile &t : s_tiles)
     t.item = -1;
   layout();
+  lv_obj_set_style_opa(s_strip, LV_OPA_COVER, LV_PART_MAIN);
   lv_obj_remove_flag(s_strip, LV_OBJ_FLAG_HIDDEN);
   start(&s_spread, anim_spread_cb, UNIT, SPREAD_MS,
         [](lv_anim_t *) { settled(); });
@@ -306,6 +336,7 @@ void carousel_reload(int count, int item) {
   lv_anim_delete(&s_pos, anim_pos_cb);
   s_count = std::max(count, 1);
   s_pos = s_target = item * UNIT;
+  s_drag_origin = s_target;
   for (Tile &t : s_tiles)
     t.item = -1;
   layout();
@@ -317,6 +348,66 @@ void carousel_refresh(int item) {
       t.item = -1;
       fill(t, item);
     }
+}
+
+void carousel_begin_drag() {
+  lv_anim_delete(&s_pos, anim_pos_cb);
+  s_drag_origin = s_pos;
+}
+
+void carousel_drag(int32_t pixels) {
+  lv_anim_delete(&s_pos, anim_pos_cb);
+  int32_t unit_pixels = s_tile + GAP;
+  int32_t desired = s_drag_origin - pixels * UNIT / unit_pixels;
+  int32_t low = 0;
+  int32_t high = (s_count - 1) * UNIT;
+  if (!s_hooks.wrap && (desired < low || desired > high)) {
+    int32_t edge = std::clamp(desired, low, high);
+    desired = edge + (desired - edge) / 3;
+  }
+  s_pos = desired;
+  layout();
+}
+
+void carousel_settle(int steps, uint32_t ms, void (*done)()) {
+  int32_t item = nearest(s_drag_origin) + steps;
+  if (!s_hooks.wrap)
+    item = std::clamp<int32_t>(item, 0, s_count - 1);
+  s_target = item * UNIT;
+  s_drag_origin = s_target;
+  s_settled = done;
+  lv_anim_completed_cb_t on_done = nullptr;
+  if (done)
+    on_done = [](lv_anim_t *) { settled(); };
+  start(&s_pos, anim_pos_cb, s_target, ms, on_done);
+}
+
+void carousel_crossfade_reload(int count, int item, uint32_t ms) {
+  lv_anim_delete(s_strip, anim_strip_opa_cb);
+  s_crossfade_count = count;
+  s_crossfade_item = item;
+  s_crossfade_ms = ms;
+  lv_anim_t out;
+  lv_anim_init(&out);
+  lv_anim_set_var(&out, s_strip);
+  lv_anim_set_exec_cb(&out, anim_strip_opa_cb);
+  lv_anim_set_values(&out, lv_obj_get_style_opa(s_strip, LV_PART_MAIN),
+                     LV_OPA_TRANSP);
+  lv_anim_set_duration(&out, ms / 2);
+  motion_ease_in_out(&out);
+  lv_anim_set_completed_cb(&out, [](lv_anim_t *) {
+    carousel_reload(s_crossfade_count, s_crossfade_item);
+    lv_obj_set_style_opa(s_strip, LV_OPA_TRANSP, LV_PART_MAIN);
+    lv_anim_t in;
+    lv_anim_init(&in);
+    lv_anim_set_var(&in, s_strip);
+    lv_anim_set_exec_cb(&in, anim_strip_opa_cb);
+    lv_anim_set_values(&in, LV_OPA_TRANSP, LV_OPA_COVER);
+    lv_anim_set_duration(&in, s_crossfade_ms - s_crossfade_ms / 2);
+    motion_ease_in_out(&in);
+    lv_anim_start(&in);
+  });
+  lv_anim_start(&out);
 }
 
 int carousel_item() { return wrap(s_target / UNIT); }

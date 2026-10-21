@@ -2,7 +2,7 @@
 
 #include "app_config.h"
 
-/// Initialize the UI (call after display_init).
+/// Initialize the display and UI.
 void ui_init();
 
 /// Update the status message shown before playback starts.
@@ -10,6 +10,9 @@ void ui_set_status(const char *msg);
 
 /// Update UI with new Spotify state (call from event handler).
 void ui_update_state(const SpotifyState *state);
+void ui_control_result(const SpotifyControlResult *result);
+void ui_poll_status(int status);
+void ui_set_offline(bool offline);
 
 /// Show volume overlay for a brief moment.
 void ui_show_volume(int volume);
@@ -26,5 +29,5 @@ void ui_dismiss_splash();
 /// Show WiFi setup screen with QR code to join the AP.
 void ui_show_wifi_setup(const char *ap_name);
 
-/// Show Spotify setup screen with QR code pointing to the setup URL.
-void ui_show_spotify_setup(const char *device_ip);
+/// Show the Spotify sign-in QR code for the given URL.
+void ui_show_spotify_setup(const char *url);

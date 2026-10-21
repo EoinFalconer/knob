@@ -105,11 +105,7 @@ FONTS = {
             ("tnum", "case"),
         ),
     ],
-    "spotify": [
-        ("sf_regular_16", PRO, "regular", 16, TEXT, ()),
-        ("sf_regular_22", PRO, "regular", 22, TEXT, ()),
-        ("sf_semibold_28", PRO, "semibold", 28, TEXT, ()),
-    ],
+    "spotify": SHARED_FONTS,
 }
 
 
